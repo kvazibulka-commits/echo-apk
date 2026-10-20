@@ -1,14 +1,19 @@
 package ru.echo.radar
 
+import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 import kotlin.math.abs
@@ -32,6 +37,20 @@ data class EchoTrackSignal(
     val reactions: Map<String, Int>
 )
 
+data class SavedEchoTrack(
+    val artist: String,
+    val title: String,
+    val personaTitle: String,
+    val moodLabel: String,
+    val savedAt: String
+)
+
+data class IncomingReactionBanner(
+    val id: Long,
+    val symbol: String,
+    val message: String
+)
+
 data class CityZoneTrace(
     val placeName: String,
     val dominantVibe: String,
@@ -50,9 +69,13 @@ data class CuratedPersona(
 
 object EchoStateRepository {
 
-    private val myDeviceId = "echo_android_" + UUID.randomUUID().toString().take(6)
+    private const val PREFS_NAME = "echo_radar_local_store"
+    private const val KEY_DEVICE_ID = "device_id"
+    private const val KEY_SAVED_TRACKS = "saved_tracks_json"
 
-    // Список адресов для автопоиска локального сервера ПК (10.0.2.2 — стандартный мост BlueStacks/Android)
+    private var myDeviceId = "echo_android_" + UUID.randomUUID().toString().take(6)
+    private var appContext: Context? = null
+
     @Volatile
     private var customServerHost: String? = null
 
@@ -64,6 +87,22 @@ object EchoStateRepository {
 
     private val _listenerConnected = MutableStateFlow(false)
     val listenerConnected: StateFlow<Boolean> = _listenerConnected.asStateFlow()
+
+    private val _savedTracks = MutableStateFlow<List<SavedEchoTrack>>(emptyList())
+    val savedTracks: StateFlow<List<SavedEchoTrack>> = _savedTracks.asStateFlow()
+
+    private val _incomingBanner = MutableStateFlow<IncomingReactionBanner?>(null)
+    val incomingBanner: StateFlow<IncomingReactionBanner?> = _incomingBanner.asStateFlow()
+
+    private val _eveningTraces = MutableStateFlow(
+        listOf(
+            "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
+            "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel",
+            "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim",
+            "19:30 · Вечерний след у метро: Aphex Twin — #3 (Rhubarb)"
+        )
+    )
+    val eveningTraces: StateFlow<List<String>> = _eveningTraces.asStateFlow()
 
     private val sessionTrackHistory = mutableListOf<Pair<String, String>>()
     private var sameArtistStreak = 1
@@ -204,16 +243,7 @@ object EchoStateRepository {
         CityZoneTrace("Университетский квартал", "Midwest Emo / Shoegaze", "Slowdive, American Football, Alcest", 18)
     )
 
-    @Volatile
-    var eveningHistory = listOf(
-        "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
-        "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel",
-        "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim",
-        "19:30 · Вечерний след у метро: Aphex Twin — #3 (Rhubarb)"
-    )
-
     init {
-        // Фоновый поток синхронизации с локальным сервером ПК каждые 3 секунды
         thread(isDaemon = true, name = "EchoServerSync") {
             while (true) {
                 try {
@@ -222,9 +252,102 @@ object EchoStateRepository {
                     }
                 } catch (_: Exception) {
                 }
-                Thread.sleep(3000)
+                Thread.sleep(2500)
             }
         }
+    }
+
+    fun initLocalStore(context: Context) {
+        if (appContext != null) return
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        // Сохраняем постоянный анонимный ID устройства между запусками
+        val savedId = prefs.getString(KEY_DEVICE_ID, null)
+        if (savedId != null) {
+            myDeviceId = savedId
+            _myCurrentTrack.value = _myCurrentTrack.value.copy(id = myDeviceId)
+        } else {
+            prefs.edit().putString(KEY_DEVICE_ID, myDeviceId).apply()
+        }
+
+        // Загружаем сохранённые треки
+        val rawJson = prefs.getString(KEY_SAVED_TRACKS, "[]") ?: "[]"
+        try {
+            val arr = JSONArray(rawJson)
+            val loaded = mutableListOf<SavedEchoTrack>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                loaded.add(
+                    SavedEchoTrack(
+                        artist = o.optString("artist", ""),
+                        title = o.optString("title", ""),
+                        personaTitle = o.optString("personaTitle", ""),
+                        moodLabel = o.optString("moodLabel", ""),
+                        savedAt = o.optString("savedAt", "")
+                    )
+                )
+            }
+            _savedTracks.value = loaded
+        } catch (_: Exception) {
+        }
+    }
+
+    fun saveTrackToFinds(signal: EchoTrackSignal): Boolean {
+        val currentList = _savedTracks.value.toMutableList()
+        val alreadyExists = currentList.any {
+            it.artist.equals(signal.artist, ignoreCase = true) &&
+                it.title.equals(signal.title, ignoreCase = true)
+        }
+        if (alreadyExists) return false
+
+        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        val item = SavedEchoTrack(
+            artist = signal.artist,
+            title = signal.title,
+            personaTitle = signal.personaTitle,
+            moodLabel = signal.moodLabel,
+            savedAt = timeStr
+        )
+        currentList.add(0, item)
+        _savedTracks.value = currentList
+        persistSavedTracks(currentList)
+        return true
+    }
+
+    fun removeSavedTrack(track: SavedEchoTrack) {
+        val updated = _savedTracks.value.filterNot {
+            it.artist == track.artist && it.title == track.title
+        }
+        _savedTracks.value = updated
+        persistSavedTracks(updated)
+    }
+
+    private fun persistSavedTracks(list: List<SavedEchoTrack>) {
+        val ctx = appContext ?: return
+        try {
+            val arr = JSONArray()
+            list.forEach { t ->
+                val obj = JSONObject().apply {
+                    put("artist", t.artist)
+                    put("title", t.title)
+                    put("personaTitle", t.personaTitle)
+                    put("moodLabel", t.moodLabel)
+                    put("savedAt", t.savedAt)
+                }
+                arr.put(obj)
+            }
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_SAVED_TRACKS, arr.toString())
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun dismissBanner() {
+        _incomingBanner.value = null
     }
 
     fun setListenerConnected(connected: Boolean) {
@@ -243,7 +366,6 @@ object EchoStateRepository {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
 
-        // Если в окне "Вручную" ввели IP-адрес ПК (например, 192.168.1.50), сохраняем его как адрес сервера
         if (cleanArtist.matches(Regex("""^(ip:)?\d{1,3}(\.\d{1,3}){3}(:\d+)?$""", RegexOption.IGNORE_CASE))) {
             val rawHost = cleanArtist.removePrefix("ip:").removePrefix("IP:")
             customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
@@ -273,7 +395,7 @@ object EchoStateRepository {
         }
 
         lastBaseSourceName = mapPackageToName(sourcePackage)
-        val displaySource = if (serverOnline) "$lastBaseSourceName · Сервер ПК ●" else lastBaseSourceName
+        val displaySource = if (serverOnline) "$lastBaseSourceName · Эфир ПК ●" else lastBaseSourceName
 
         val curated = generateDynamicPersona(
             artist = cleanArtist,
@@ -317,7 +439,7 @@ object EchoStateRepository {
     private fun syncWithLocalServer() {
         val candidates = mutableListOf<String>()
         customServerHost?.let { candidates.add(it) }
-        candidates.add("10.0.2.2:8080") // Стандартный мост эмулятора Android / BlueStacks к Windows ПК
+        candidates.add("10.0.2.2:8080")
         candidates.add("127.0.0.1:8080")
 
         val myTrack = _myCurrentTrack.value
@@ -367,14 +489,31 @@ object EchoStateRepository {
         val current = _myCurrentTrack.value
         val updatedSource = "$lastBaseSourceName · Эфир ПК ●"
 
-        if (refinedMood.isNotEmpty() && refinedMood != current.moodLabel) {
-            _myCurrentTrack.value = current.copy(
-                moodLabel = refinedMood,
-                sourceName = updatedSource
-            )
-        } else if (current.sourceName != updatedSource) {
-            _myCurrentTrack.value = current.copy(sourceName = updatedSource)
+        // Проверяем, прислал ли кто-то в эфире новую реакцию на наш текущий трек
+        val myReactObj = json.optJSONObject("myReactions")
+        val parsedMyReactions = mutableMapOf<String, Int>()
+        if (myReactObj != null) {
+            val keys = myReactObj.keys()
+            while (keys.hasNext()) {
+                val sym = keys.next()
+                val newCount = myReactObj.optInt(sym, 0)
+                parsedMyReactions[sym] = newCount
+                val oldCount = current.reactions[sym] ?: 0
+                if (newCount > oldCount) {
+                    _incomingBanner.value = IncomingReactionBanner(
+                        id = System.currentTimeMillis(),
+                        symbol = sym,
+                        message = "Слушатель рядом откликнулся на вашу волну «${current.artist}» символом $sym"
+                    )
+                }
+            }
         }
+
+        _myCurrentTrack.value = current.copy(
+            moodLabel = if (refinedMood.isNotEmpty()) refinedMood else current.moodLabel,
+            sourceName = updatedSource,
+            reactions = parsedMyReactions
+        )
 
         val arr = json.optJSONArray("nearbySignals")
         if (arr != null && arr.length() > 0) {
@@ -420,7 +559,7 @@ object EchoStateRepository {
             for (i in 0 until tracesArr.length()) {
                 traces.add(tracesArr.getString(i))
             }
-            eveningHistory = traces
+            _eveningTraces.value = traces
         }
     }
 
