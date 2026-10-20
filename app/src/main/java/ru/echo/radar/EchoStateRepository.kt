@@ -30,6 +30,12 @@ data class CityZoneTrace(
     val listenersCount: Int
 )
 
+data class CuratedPersona(
+    val personaTitle: String,
+    val moodLabel: String,
+    val observation: String
+)
+
 object EchoStateRepository {
 
     private val _presenceEnabled = MutableStateFlow(true)
@@ -178,6 +184,10 @@ object EchoStateRepository {
         _presenceEnabled.value = !_presenceEnabled.value
     }
 
+    fun updateDetectedMusic(artist: String, title: String, sourcePackage: String) {
+        updateMyPlayingTrack(artist, title, sourcePackage)
+    }
+
     fun updateMyPlayingTrack(artist: String, title: String, sourcePackage: String) {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
@@ -188,9 +198,9 @@ object EchoStateRepository {
             artist = cleanArtist,
             title = cleanTitle,
             sourceName = readableSource,
-            personaTitle = curated.first,
-            moodLabel = curated.second,
-            personaObservation = curated.third,
+            personaTitle = curated.personaTitle,
+            moodLabel = curated.moodLabel,
+            personaObservation = curated.observation,
             avatarPetals = ((cleanArtist.length + cleanTitle.length) % 6) + 5
         )
     }
@@ -207,32 +217,32 @@ object EchoStateRepository {
         }
     }
 
-    private fun inferPersonaFromTrack(artist: String, title: String): Triple<String, String String,> {
+    private fun inferPersonaFromTrack(artist: String, title: String): CuratedPersona {
         val combined = "$artist $title".lowercase()
         return when {
             combined.contains("wardruna") || combined.contains("agalloch") || combined.contains("forest") || combined.contains("лес") ->
-                Triple(
-                    "Хранитель северных лесов",
-                    "Эпическое созерцание",
-                    "ИИ-куратор: вы выбираете глубокие природные текстуры и фолк-атмосферу."
+                CuratedPersona(
+                    personaTitle = "Хранитель северных лесов",
+                    moodLabel = "Эпическое созерцание",
+                    observation = "ИИ-куратор: вы выбираете глубокие природные текстуры и фолк-атмосферу."
                 )
             combined.contains("burial") || combined.contains("massive") || combined.contains("night") || combined.contains("ночь") ->
-                Triple(
-                    "Проводник ночных туманов",
-                    "Городской даб и тени",
-                    "ИИ-куратор: в вашем эфире преобладает обволакивающий бас и ночная кинематографичность."
+                CuratedPersona(
+                    personaTitle = "Проводник ночных туманов",
+                    moodLabel = "Городской даб и тени",
+                    observation = "ИИ-куратор: в вашем эфире преобладает обволакивающий бас и ночная кинематографичность."
                 )
             combined.contains("radiohead") || combined.contains("post") || combined.contains("ambient") ->
-                Triple(
-                    "Архивариус забытых кассет",
-                    "Тонкая меланхолия",
-                    "ИИ-куратор: вы цените сложную гармонию и медленное эмоциональное раскрытие."
+                CuratedPersona(
+                    personaTitle = "Архивариус забытых кассет",
+                    moodLabel = "Тонкая меланхолия",
+                    observation = "ИИ-куратор: вы цените сложную гармонию и медленное эмоциональное раскрытие."
                 )
             else ->
-                Triple(
-                    "Искатель звуковых горизонтов",
-                    "Живой городской эфир",
-                    "ИИ-куратор зафиксировал волну «$artist» и обновил ваш радиус резонанса."
+                CuratedPersona(
+                    personaTitle = "Искатель звуковых горизонтов",
+                    moodLabel = "Живой городской эфир",
+                    observation = "ИИ-куратор зафиксировал волну «$artist» и обновил ваш радиус резонанса."
                 )
         }
     }
