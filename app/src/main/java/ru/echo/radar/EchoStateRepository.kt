@@ -104,6 +104,10 @@ object EchoStateRepository {
     )
     val eveningTraces: StateFlow<List<String>> = _eveningTraces.asStateFlow()
 
+    // Мостик совместимости со старой версией MainActivity.kt
+    val eveningHistory: List<String>
+        get() = _eveningTraces.value
+
     private val sessionTrackHistory = mutableListOf<Pair<String, String>>()
     private var sameArtistStreak = 1
     private var currentArchetypeSeed = 0
@@ -263,7 +267,6 @@ object EchoStateRepository {
         appContext = appCtx
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // Сохраняем постоянный анонимный ID устройства между запусками
         val savedId = prefs.getString(KEY_DEVICE_ID, null)
         if (savedId != null) {
             myDeviceId = savedId
@@ -272,7 +275,6 @@ object EchoStateRepository {
             prefs.edit().putString(KEY_DEVICE_ID, myDeviceId).apply()
         }
 
-        // Загружаем сохранённые треки
         val rawJson = prefs.getString(KEY_SAVED_TRACKS, "[]") ?: "[]"
         try {
             val arr = JSONArray(rawJson)
@@ -489,7 +491,6 @@ object EchoStateRepository {
         val current = _myCurrentTrack.value
         val updatedSource = "$lastBaseSourceName · Эфир ПК ●"
 
-        // Проверяем, прислал ли кто-то в эфире новую реакцию на наш текущий трек
         val myReactObj = json.optJSONObject("myReactions")
         val parsedMyReactions = mutableMapOf<String, Int>()
         if (myReactObj != null) {
