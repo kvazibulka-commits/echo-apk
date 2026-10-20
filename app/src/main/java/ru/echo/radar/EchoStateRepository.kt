@@ -3,6 +3,14 @@ package ru.echo.radar
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.UUID
+import kotlin.concurrent.thread
 import kotlin.math.abs
 
 data class EchoTrackSignal(
@@ -42,48 +50,39 @@ data class CuratedPersona(
 
 object EchoStateRepository {
 
+    private val myDeviceId = "echo_android_" + UUID.randomUUID().toString().take(6)
+
+    // Список адресов для автопоиска локального сервера ПК (10.0.2.2 — стандартный мост BlueStacks/Android)
+    @Volatile
+    private var customServerHost: String? = null
+
+    @Volatile
+    private var serverOnline: Boolean = false
+
     private val _presenceEnabled = MutableStateFlow(true)
     val presenceEnabled: StateFlow<Boolean> = _presenceEnabled.asStateFlow()
 
     private val _listenerConnected = MutableStateFlow(false)
     val listenerConnected: StateFlow<Boolean> = _listenerConnected.asStateFlow()
 
-    // Память прослушивания за сессию для анализа динамики вкуса
     private val sessionTrackHistory = mutableListOf<Pair<String, String>>()
     private var sameArtistStreak = 1
     private var currentArchetypeSeed = 0
+    private var lastBaseSourceName = "Системный перехват Android"
 
-    // Палитра из 20 контрастных атмосферных оттенков для генеративного аватара
     private val avatarColorPalette = listOf(
-        0xFF38BDF8L, // Неоновый циан
-        0xFFA78BFAL, // Глубокий аметист
-        0xFF34D399L, // Северное сияние (изумруд)
-        0xFFF472B6L, // Ночной розовый неон
-        0xFFFBBF24L, // Теплый ламповый янтарь
-        0xFF60A5FAL, // Ледяной кобальт
-        0xFFFB7185L, // Багровый закат
-        0xFF2DD4BFL, // Морская бездна (бирюза)
-        0xFF818CF8L, // Индиго сумерек
-        0xFFC084FCL, // Фиолетовый эфир
-        0xFF4ADE80L, // Лесной мох
-        0xFFF97316L, // Огненный импульс
-        0xFFE879F9L, // Кибер-пурпур
-        0xFF22D3EEL, // Кристальный лед
-        0xFFA3E635L, // Кислотный лайм
-        0xFFEF4444L, // Рубиновый лазер
-        0xFF93C5FDL, // Туманный рассвет
-        0xFFD8B4FEL, // Лавандовый дым
-        0xFF6EE7B7L, // Мятный бриз
-        0xFFFDA4AFL  // Розовый кварц
+        0xFF38BDF8L, 0xFFA78BFAL, 0xFF34D399L, 0xFFF472B6L, 0xFFFBBF24L,
+        0xFF60A5FAL, 0xFFFB7185L, 0xFF2DD4BFL, 0xFF818CF8L, 0xFFC084FCL,
+        0xFF4ADE80L, 0xFFF97316L, 0xFFE879F9L, 0xFF22D3EEL, 0xFFA3E635L,
+        0xFFEF4444L, 0xFF93C5FDL, 0xFFD8B4FEL, 0xFF6EE7B7L, 0xFFFDA4AFL
     )
 
-    // Матрица для генерации 36 000+ уникальных литературных образов
     private val archetypes = listOf(
         "Архивариус", "Проводник", "Хранитель", "Навигатор", "Алхимик",
         "Созерцатель", "Картограф", "Ловец", "Хроникёр", "Часовой",
         "Странник", "Дешифровщик", "Смотритель", "Собиратель", "Реставратор",
         "Слушатель", "Сталкер", "Искатель", "Пилот", "Куратор",
-        "Механик", "Призрак", "Свидетель", "Астроном", "Дирижёр",
+        "Менестрель", "Призрак", "Свидетель", "Астроном", "Дирижёр",
         "Переводчик", "Охотник", "Исследователь", "Поэт", "Часовщик"
     )
 
@@ -104,7 +103,7 @@ object EchoStateRepository {
         "миражей", "приливов", "эхолотов", "сумерек", "винила",
         "маршрутов", "сигналов", "океанов", "орбит", "воспоминаний",
         "резонансов", "импульсов", "туманов", "симфоний", "станций",
-        "отголосков", "механических снов", "магнитных лент", "огней", "пустот"
+        "отголосков", "баллад", "магнитных лент", "огней", "легенд"
     )
 
     private val moodLabels = listOf(
@@ -112,13 +111,13 @@ object EchoStateRepository {
         "Северный ритуал", "Городской даб и тени", "Электрический драйв",
         "Кинематографичный эмбиент", "Гитарная невесомость", "Индустриальный пульс",
         "Бархатный грув", "Сумеречный фолк", "Космическая одиссея",
-        "Дождливый лоу-фай", "Акустическая исповедь", "Тяжёлый катарсис",
+        "Дождливый лоу-фай", "Акустическая исповедь", "Ренессанс-фолк и баллада",
         "Гипнотический минимализм"
     )
 
     private val _myCurrentTrack = MutableStateFlow(
         EchoTrackSignal(
-            id = "self",
+            id = myDeviceId,
             artist = "Ожидание музыки...",
             title = "Включите трек в Яндекс Музыке / VK / Плеере",
             sourceName = "Системный перехват Android",
@@ -141,7 +140,7 @@ object EchoStateRepository {
     private val _nearbySignals = MutableStateFlow(
         listOf(
             EchoTrackSignal(
-                id = "sig_1",
+                id = "bot_1",
                 artist = "Radiohead",
                 title = "Weird Fishes / Arpeggi",
                 sourceName = "Яндекс Музыка",
@@ -159,7 +158,7 @@ object EchoStateRepository {
                 reactions = mapOf("🌊" to 4, "🌑" to 2, "🎼" to 3)
             ),
             EchoTrackSignal(
-                id = "sig_2",
+                id = "bot_2",
                 artist = "Wardruna",
                 title = "Helvegen",
                 sourceName = "VK Музыка",
@@ -177,7 +176,7 @@ object EchoStateRepository {
                 reactions = mapOf("🌲" to 6, "⚔" to 2, "🌑" to 1)
             ),
             EchoTrackSignal(
-                id = "sig_3",
+                id = "bot_3",
                 artist = "Burial",
                 title = "Archangel",
                 sourceName = "Poweramp FLAC",
@@ -193,42 +192,6 @@ object EchoStateRepository {
                 colorHex = 0xFFA78BFAL,
                 avatarPetals = 8,
                 reactions = mapOf("🦇" to 3, "🌑" to 5, "☁" to 4)
-            ),
-            EchoTrackSignal(
-                id = "sig_4",
-                artist = "Massive Attack",
-                title = "Angel",
-                sourceName = "Звук",
-                distanceMeters = 240,
-                angleDegrees = 310f,
-                distanceRatio = 0.82f,
-                personaTitle = "Меланхоличный космонавт",
-                personaObservation = "Предпочитает густой басовый трип-хоп и мрачную бристольскую электронику.",
-                moodLabel = "Ночной импульс",
-                compatibilityPercent = 89,
-                resonanceDays = 7,
-                encountersCount = 1,
-                colorHex = 0xFFF472B6L,
-                avatarPetals = 7,
-                reactions = mapOf("🦇" to 5, "🌑" to 3)
-            ),
-            EchoTrackSignal(
-                id = "sig_5",
-                artist = "Agalloch",
-                title = "Falling Snow",
-                sourceName = "Локальный плеер",
-                distanceMeters = 150,
-                angleDegrees = 82f,
-                distanceRatio = 0.56f,
-                personaTitle = "Путник зимних сумерек",
-                personaObservation = "Сочетает атмосферный пост-метал с акустическими неофолк-интерлюдиями.",
-                moodLabel = "Холодный рассвет",
-                compatibilityPercent = 93,
-                resonanceDays = 15,
-                encountersCount = 4,
-                colorHex = 0xFF60A5FAL,
-                avatarPetals = 9,
-                reactions = mapOf("🌲" to 4, "⚔" to 3, "☁" to 2)
             )
         )
     )
@@ -241,12 +204,28 @@ object EchoStateRepository {
         CityZoneTrace("Университетский квартал", "Midwest Emo / Shoegaze", "Slowdive, American Football, Alcest", 18)
     )
 
-    val eveningHistory = listOf(
+    @Volatile
+    var eveningHistory = listOf(
         "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
         "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel",
         "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim",
         "19:30 · Вечерний след у метро: Aphex Twin — #3 (Rhubarb)"
     )
+
+    init {
+        // Фоновый поток синхронизации с локальным сервером ПК каждые 3 секунды
+        thread(isDaemon = true, name = "EchoServerSync") {
+            while (true) {
+                try {
+                    if (_presenceEnabled.value) {
+                        syncWithLocalServer()
+                    }
+                } catch (_: Exception) {
+                }
+                Thread.sleep(3000)
+            }
+        }
+    }
 
     fun setListenerConnected(connected: Boolean) {
         _listenerConnected.value = connected
@@ -264,8 +243,15 @@ object EchoStateRepository {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
 
+        // Если в окне "Вручную" ввели IP-адрес ПК (например, 192.168.1.50), сохраняем его как адрес сервера
+        if (cleanArtist.matches(Regex("""^(ip:)?\d{1,3}(\.\d{1,3}){3}(:\d+)?$""", RegexOption.IGNORE_CASE))) {
+            val rawHost = cleanArtist.removePrefix("ip:").removePrefix("IP:")
+            customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
+            thread(isDaemon = true) { syncWithLocalServer() }
+            return
+        }
+
         val current = _myCurrentTrack.value
-        // Игнорируем повторные системные уведомления от того же самого трека (например, тик таймера в Яндекс Музыке)
         if (current.artist.equals(cleanArtist, ignoreCase = true) &&
             current.title.equals(cleanTitle, ignoreCase = true)
         ) {
@@ -286,7 +272,9 @@ object EchoStateRepository {
             sessionTrackHistory.removeAt(0)
         }
 
-        val readableSource = mapPackageToName(sourcePackage)
+        lastBaseSourceName = mapPackageToName(sourcePackage)
+        val displaySource = if (serverOnline) "$lastBaseSourceName · Сервер ПК ●" else lastBaseSourceName
+
         val curated = generateDynamicPersona(
             artist = cleanArtist,
             title = cleanTitle,
@@ -299,7 +287,7 @@ object EchoStateRepository {
         _myCurrentTrack.value = current.copy(
             artist = cleanArtist,
             title = cleanTitle,
-            sourceName = readableSource,
+            sourceName = displaySource,
             personaTitle = curated.personaTitle,
             moodLabel = curated.moodLabel,
             personaObservation = curated.observation,
@@ -307,8 +295,8 @@ object EchoStateRepository {
             avatarPetals = curated.petals
         )
 
-        // Пересчитываем музыкальную совместимость с людьми вокруг под текущий вектор музыки
         recalculateNearbyCompatibility(curated.vibeVector)
+        thread(isDaemon = true) { syncWithLocalServer() }
     }
 
     fun sendSymbolReaction(signalId: String, symbol: String) {
@@ -319,6 +307,147 @@ object EchoStateRepository {
                 sig.copy(reactions = updated)
             } else {
                 sig
+            }
+        }
+        thread(isDaemon = true) {
+            postReactionToServer(signalId, symbol)
+        }
+    }
+
+    private fun syncWithLocalServer() {
+        val candidates = mutableListOf<String>()
+        customServerHost?.let { candidates.add(it) }
+        candidates.add("10.0.2.2:8080") // Стандартный мост эмулятора Android / BlueStacks к Windows ПК
+        candidates.add("127.0.0.1:8080")
+
+        val myTrack = _myCurrentTrack.value
+        val payload = JSONObject().apply {
+            put("id", myDeviceId)
+            put("artist", myTrack.artist)
+            put("title", myTrack.title)
+            put("sourceName", lastBaseSourceName)
+            put("personaTitle", myTrack.personaTitle)
+            put("personaObservation", myTrack.personaObservation)
+            put("moodLabel", myTrack.moodLabel)
+            put("colorHex", myTrack.colorHex)
+            put("avatarPetals", myTrack.avatarPetals)
+        }
+
+        for (host in candidates) {
+            try {
+                val url = URL("http://$host/api/signal")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1500
+                    readTimeout = 2000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
+                    writer.write(payload.toString())
+                }
+
+                if (conn.responseCode == 200) {
+                    val responseText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
+                        it.readText()
+                    }
+                    handleServerResponse(JSONObject(responseText))
+                    serverOnline = true
+                    return
+                }
+            } catch (_: Exception) {
+            }
+        }
+        serverOnline = false
+    }
+
+    private fun handleServerResponse(json: JSONObject) {
+        val refinedMood = json.optString("myRefinedMood", "")
+        val current = _myCurrentTrack.value
+        val updatedSource = "$lastBaseSourceName · Эфир ПК ●"
+
+        if (refinedMood.isNotEmpty() && refinedMood != current.moodLabel) {
+            _myCurrentTrack.value = current.copy(
+                moodLabel = refinedMood,
+                sourceName = updatedSource
+            )
+        } else if (current.sourceName != updatedSource) {
+            _myCurrentTrack.value = current.copy(sourceName = updatedSource)
+        }
+
+        val arr = json.optJSONArray("nearbySignals")
+        if (arr != null && arr.length() > 0) {
+            val list = mutableListOf<EchoTrackSignal>()
+            for (i in 0 until arr.length()) {
+                val item = arr.getJSONObject(i)
+                val reactObj = item.optJSONObject("reactions")
+                val reactMap = mutableMapOf<String, Int>()
+                if (reactObj != null) {
+                    val keys = reactObj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        reactMap[k] = reactObj.optInt(k, 0)
+                    }
+                }
+                list.add(
+                    EchoTrackSignal(
+                        id = item.optString("id", "sig_$i"),
+                        artist = item.optString("artist", "Неизвестный"),
+                        title = item.optString("title", "Без названия"),
+                        sourceName = item.optString("sourceName", "Эфир"),
+                        distanceMeters = item.optInt("distanceMeters", 120),
+                        angleDegrees = item.optDouble("angleDegrees", 45.0).toFloat(),
+                        distanceRatio = item.optDouble("distanceRatio", 0.5).toFloat(),
+                        personaTitle = item.optString("personaTitle", "Странник эфира"),
+                        personaObservation = item.optString("personaObservation", ""),
+                        moodLabel = item.optString("moodLabel", "Ночное созерцание"),
+                        compatibilityPercent = item.optInt("compatibilityPercent", 92),
+                        resonanceDays = item.optInt("resonanceDays", 10),
+                        encountersCount = item.optInt("encountersCount", 2),
+                        colorHex = item.optLong("colorHex", 0xFF38BDF8L),
+                        avatarPetals = item.optInt("avatarPetals", 6),
+                        reactions = reactMap
+                    )
+                )
+            }
+            _nearbySignals.value = list
+        }
+
+        val tracesArr = json.optJSONArray("eveningTraces")
+        if (tracesArr != null && tracesArr.length() > 0) {
+            val traces = mutableListOf<String>()
+            for (i in 0 until tracesArr.length()) {
+                traces.add(tracesArr.getString(i))
+            }
+            eveningHistory = traces
+        }
+    }
+
+    private fun postReactionToServer(targetId: String, symbol: String) {
+        val candidates = mutableListOf<String>()
+        customServerHost?.let { candidates.add(it) }
+        candidates.add("10.0.2.2:8080")
+        candidates.add("127.0.0.1:8080")
+
+        val body = JSONObject().apply {
+            put("targetId", targetId)
+            put("symbol", symbol)
+        }.toString()
+
+        for (host in candidates) {
+            try {
+                val url = URL("http://$host/api/react")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1500
+                    readTimeout = 1500
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
+                if (conn.responseCode == 200) return
+            } catch (_: Exception) {
             }
         }
     }
@@ -335,19 +464,15 @@ object EchoStateRepository {
         val titleNorm = title.lowercase().trim()
         val fullKey = "$artistNorm::$titleNorm"
 
-        // Глубокий хеш исполнителя и композиции для уникальной сигнатуры
         val artistHash = abs(artistNorm.hashCode() * 31 + artistNorm.sumOf { it.code * 17 })
         val titleHash = abs(titleNorm.hashCode() * 37 + titleNorm.sumOf { it.code * 13 })
         val combinedHash = abs(fullKey.hashCode() xor (artistHash + titleHash))
 
-        // Если сменился исполнитель — формируем новое уникальное ядро образа.
-        // Если играет тот же исполнитель подряд — сохраняем ядро архетипа, но развиваем оттенок.
         if (!isSameArtist || currentArchetypeSeed == 0) {
             currentArchetypeSeed = artistHash
         }
 
         val archetypeIndex = currentArchetypeSeed % archetypes.size
-        // Эпитет и метафора зависят от сочетания артиста и характера самой песни
         val epithetIndex = if (isSameArtist && streak < 3) {
             (currentArchetypeSeed / 7) % epithets.size
         } else {
@@ -358,10 +483,9 @@ object EchoStateRepository {
         val generatedTitle = "${archetypes[archetypeIndex]} ${epithets[epithetIndex]} ${realms[realmIndex]}"
         val mood = detectMoodOrFallback(artistNorm, titleNorm, combinedHash)
 
-        // Выбираем контрастный цвет и число граней (от 3 до 14), чтобы аватар заметно менялся на каждом треке
         val colorIdx = (combinedHash + totalTracksInSession * 3) % avatarColorPalette.size
         val selectedColor = avatarColorPalette[colorIdx]
-        val petals = 3 + (combinedHash % 12) // от 3 (треугольная волна) до 14 (лучевая звезда)
+        val petals = 3 + (combinedHash % 12)
 
         val observation = when {
             previousArtist == null ->
@@ -371,7 +495,7 @@ object EchoStateRepository {
             isSameArtist && streak >= 3 ->
                 "Глубокое погружение в «$artist» ($streak-я композиция подряд). Ваша музыкальная фаза стабильна, спектр сместился к оттенку «$mood»."
             else ->
-                "Смена волны с «$previousArtist» на «$artist»: звучание развернулось в сторону «$mood». ИИ-куратор сформировал новый образ (треков за сессию: $totalTracksInSession)."
+                "Смена волны с «$previousArtist» на «$artist»: звучание развернулось в сторону «$mood». ИИ-куратор сформировал новый образ."
         }
 
         return CuratedPersona(
@@ -385,22 +509,29 @@ object EchoStateRepository {
     }
 
     private fun detectMoodOrFallback(artistNorm: String, titleNorm: String, hash: Int): String {
-        val text = "$artistNorm $titleNorm"
+        val text = " $artistNorm $titleNorm "
         return when {
-            text.contains("кино") || text.contains("молчат") || text.contains("cure") || text.contains("дурной") || text.contains("post") ->
-                "Холодный пост-панк и неон"
-            text.contains("wardruna") || text.contains("agalloch") || text.contains("heilung") || text.contains("фолк") || text.contains("лес") ->
+            text.contains("blackmore") || text.contains("renaissance") || text.contains("faun") ||
+                text.contains("мельница") || text.contains("medieval") || text.contains("celtic") ->
+                "Ренессанс-фолк и лунная баллада"
+            text.contains("wardruna") || text.contains("agalloch") || text.contains("heilung") ||
+                text.contains("фолк") || text.contains(" лес ") ->
                 "Северный ритуал и туман"
-            text.contains("burial") || text.contains("massive") || text.contains("portishead") || text.contains("tricky") ->
+            text.contains("кино") || text.contains("молчат") || text.contains("cure") ||
+                text.contains("дурной") || text.contains("post-punk") ->
+                "Холодный пост-панк и неон"
+            text.contains("burial") || text.contains("massive") || text.contains("portishead") ||
+                text.contains("tricky") ->
                 "Ночной трип-хоп и винил"
-            text.contains("aphex") || text.contains("ambient") || text.contains("eno") || text.contains("coil") || text.contains("drone") ->
+            text.contains("aphex") || text.contains("ambient") || text.contains("eno") ||
+                text.contains("coil") || text.contains("drone") ->
                 "Глубокий эмбиент-эфир"
-            text.contains("metallica") || text.contains("doom") || text.contains("black") || text.contains("slayer") || text.contains("metal") ->
+            text.contains("metallica") || text.contains("doom") || text.contains("black metal") ||
+                text.contains("slayer") || text.contains("megadeth") ->
                 "Тяжёлый штормовой рифф"
-            text.contains("radiohead") || text.contains("muse") || text.contains("placebo") || text.contains("interpol") ->
+            text.contains("radiohead") || text.contains("muse") || text.contains("placebo") ||
+                text.contains("interpol") ->
                 "Гитарная меланхолия"
-            text.contains("ночь") || text.contains("night") || text.contains("dark") || text.contains("тень") || text.contains("сон") ->
-                "Полуночное созерцание"
             else -> moodLabels[hash % moodLabels.size]
         }
     }
