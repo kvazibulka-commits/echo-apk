@@ -1,22 +1,58 @@
 package ru.echo.radar
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.service.notification.NotificationListenerService
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,425 +61,872 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    background = Color(0xFF06080D),
-                    surface = Color(0xFF0D121E),
-                    primary = Color(0xFF818CF8),
-                    secondary = Color(0xFF38BDF8)
-                )
-            ) {
-                EchoRadarAppScreen()
-            }
+            EchoRadarApp()
         }
     }
 }
 
+private fun isNotificationListenerGranted(context: Context): Boolean {
+    val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: return false
+    return flat.contains(context.packageName)
+}
+
+private fun ensureServiceBound(context: Context) {
+    try {
+        NotificationListenerService.requestRebind(
+            ComponentName(context, EchoMediaListenerService::class.java)
+        )
+    } catch (_: Exception) {
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun EchoRadarAppScreen() {
+fun EchoRadarApp() {
     val context = LocalContext.current
-    val currentTrack by EchoStateRepository.currentTrack.collectAsState()
-    val presenceActive by EchoStateRepository.presenceActive.collectAsState()
-    val signals = remember { EchoStateRepository.nearbySignals }
-    var selectedSignal by remember { mutableStateOf(signals.first()) }
-    var sentSymbolMessage by remember { mutableStateOf("") }
+    val presenceEnabled by EchoStateRepository.presenceEnabled.collectAsState()
+    val myTrack by EchoStateRepository.myCurrentTrack.collectAsState()
+    val nearbySignals by EchoStateRepository.nearbySignals.collectAsState()
+    val listenerConnected by EchoStateRepository.listenerConnected.collectAsState()
+
+    var hasOsPermission by remember { mutableStateOf(isNotificationListenerGranted(context)) }
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Радар, 1 = Поток, 2 = Следы города
+    var selectedSignalId by remember { mutableStateOf(nearbySignals.firstOrNull()?.id ?: "sig_1") }
     var showManualDialog by remember { mutableStateOf(false) }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "echo_pulse")
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 6.283f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "wave"
-    )
+    val selectedSignal = nearbySignals.find { it.id == selectedSignalId } ?: nearbySignals.first()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF06080D))
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "Э Х О",
-                    color = Color(0xFFF1F5F9),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 6.sp
-                )
-                Text(
-                    text = "Музыкальное присутствие вокруг тебя",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
+    // Авто-проверка разрешения каждые 2 секунды при возврате из настроек Android
+    LaunchedEffect(Unit) {
+        while (true) {
+            val granted = isNotificationListenerGranted(context)
+            hasOsPermission = granted
+            if (granted) {
+                ensureServiceBound(context)
             }
-
-            Button(
-                onClick = { EchoStateRepository.togglePresence() },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (presenceActive) Color(0xFF0C2D48) else Color(0xFF1E293B)
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = if (presenceActive) "● Присутствие: Вкл" else "○ Невидимка",
-                    color = if (presenceActive) Color(0xFF7DD3FC) else Color(0xFF94A3B8),
-                    fontSize = 11.sp
-                )
-            }
+            delay(2000)
         }
+    }
 
+    val testPresets = remember {
+        listOf(
+            Triple("Яндекс Музыка", "Молчат Дома", "Судно (Борис Рыжий)"),
+            Triple("VK Музыка", "Wardruna", "Kvitravn"),
+            Triple("Poweramp", "Burial & Four Tet", "Moth"),
+            Triple("Звук", "Кино", "Спокойная ночь")
+        )
+    }
+    var presetIndex by remember { mutableIntStateOf(0) }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color(0xFF070B14)
+    ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xFF0D1322))
-                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(20.dp))
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                GenerativeAvatarCanvas(
-                    phase = wavePhase,
-                    seed = currentTrack.artist.length,
-                    modifier = Modifier.size(46.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "В ВАШИХ НАУШНИКАХ · ${currentTrack.sourceApp}",
-                        color = Color(0xFF818CF8),
-                        fontSize = 10.sp
-                    )
-                    Text(
-                        text = "♫ ${currentTrack.artist} — ${currentTrack.title}",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "Ваш образ ИИ: ${currentTrack.poeticPersona}",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
-                }
-            }
-
+            // Шапка приложения
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedButton(
-                    onClick = {
-                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text("Доступ к плеерам ОС", fontSize = 11.sp, color = Color(0xFFCBD5E1))
-                }
-
-                OutlinedButton(
-                    onClick = { showManualDialog = true },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text("Ввести трек вручную", fontSize = 11.sp, color = Color(0xFF818CF8))
-                }
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(290.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFF05070C))
-                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(24.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val maxR = size.minDimension * 0.44f
-
-                listOf(0.38f, 0.68f, 0.95f).forEach { factor ->
-                    drawCircle(
-                        color = Color(0xFF1E293B),
-                        radius = (maxR * factor).coerceAtLeast(1f),
-                        center = center,
-                        style = Stroke(width = 1.5f)
+                Column {
+                    Text(
+                        text = "Э  Х  О",
+                        color = Color(0xFFF1F5F9),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Ты видишь музыку, которая живет вокруг тебя",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp
                     )
                 }
 
-                drawCircle(
-                    color = if (presenceActive) Color(0xFF38BDF8) else Color(0xFF475569),
-                    radius = 7.dp.toPx(),
-                    center = center
-                )
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (presenceEnabled) Color(0xFF0F2942) else Color(0xFF1E293B))
+                        .border(
+                            1.dp,
+                            if (presenceEnabled) Color(0xFF38BDF8) else Color(0xFF475569),
+                            RoundedCornerShape(20.dp)
+                        )
+                        .clickable { EchoStateRepository.togglePresence() }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = if (presenceEnabled) "● Присутствие: Вкл" else "○ Присутствие: Скрыто",
+                        color = if (presenceEnabled) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Блок текущего эфира пользователя и статуса перехвата
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xFF0F172A))
+                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+                    .padding(16.dp)
             ) {
-                Text(
-                    text = "Нажмите на звучащую песню, чтобы открыть слушателя:",
-                    color = Color(0xFF64748B),
-                    fontSize = 11.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "В ВАШИХ НАУШНИКАХ · ${myTrack.sourceName.uppercase()}",
+                        color = Color(0xFF38BDF8),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
 
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    signals.forEach { sig ->
-                        val isSelected = sig.id == selectedSignal.id
+                    val statusColor = if (hasOsPermission || listenerConnected) Color(0xFF34D399) else Color(0xFFF59E0B)
+                    val statusText = if (hasOsPermission || listenerConnected) {
+                        "● Перехват ОС активен"
+                    } else {
+                        "○ Нужен доступ к уведомлениям"
+                    }
+                    Text(
+                        text = statusText,
+                        color = statusColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    GenerativeAvatarCanvas(
+                        color = Color(myTrack.colorHex),
+                        petals = myTrack.avatarPetals,
+                        modifier = Modifier.size(52.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "♫ ${myTrack.artist} — ${myTrack.title}",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Ваш образ ИИ: ${myTrack.personaTitle} · ${myTrack.moodLabel}",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            text = myTrack.personaObservation,
+                            color = Color(0xFF64748B),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            } catch (_: Exception) {
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (hasOsPermission) Color(0xFF334155) else Color(0xFF38BDF8)
+                        )
+                    ) {
+                        Text(
+                            text = if (hasOsPermission) "Настройки доступа ОС" else "Включить перехват ОС",
+                            color = if (hasOsPermission) Color(0xFFCBD5E1) else Color(0xFF38BDF8),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val p = testPresets[presetIndex % testPresets.size]
+                            presetIndex++
+                            EchoStateRepository.updateMyPlayingTrack(
+                                artist = p.second,
+                                title = p.third,
+                                sourcePackage = p.first
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                        border = BorderStroke(1.dp, Color(0xFF334155))
+                    ) {
+                        Text(
+                            text = "Тест-перехват ♫",
+                            color = Color(0xFF34D399),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { showManualDialog = true },
+                        border = BorderStroke(1.dp, Color(0xFF334155))
+                    ) {
+                        Text(
+                            text = "Вручную",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Переключатель режимов (Радар / Поток / Следы города)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF0F172A))
+                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val tabs = listOf("◎ Музыкальный радар", "≋ Поток сигналов", "✦ Следы и зоны")
+                tabs.forEachIndexed { idx, title ->
+                    val active = selectedTab == idx
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (active) Color(0xFF1E293B) else Color.Transparent)
+                            .clickable { selectedTab = idx }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = title,
+                            color = if (active) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Контент выбранной вкладки
+            when (selectedTab) {
+                0 -> {
+                    // Вкладка 0: КРУГОВОЙ МУЗЫКАЛЬНЫЙ РАДАР + быстрые чипы треков
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color(0xFF0A101F))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (isSelected) Color(0xFF1E1B4B) else Color(0xCC0F172A)
-                                )
-                                .border(
-                                    1.dp,
-                                    if (isSelected) Color(0xFF818CF8) else Color(0xFF1E293B),
-                                    RoundedCornerShape(14.dp)
-                                )
-                                .clickable {
-                                    selectedSignal = sig
-                                    sentSymbolMessage = ""
-                                }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "♫ ${sig.artist} — ${sig.title}",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                                text = "Звуковое поле вокруг вас (радиус ~300 м · координаты размыты)",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp
                             )
                             Text(
-                                text = sig.distanceLabel,
-                                color = Color(0xFF94A3B8),
-                                fontSize = 10.sp
+                                text = "${nearbySignals.size} в эфире",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        InteractiveRadarField(
+                            signals = nearbySignals,
+                            selectedSignalId = selectedSignal.id,
+                            onSelectSignal = { selectedSignalId = it.id }
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "Нажмите на точку на радаре или на звучащую композицию ниже:",
+                            color = Color(0xFF64748B),
+                            fontSize = 11.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            nearbySignals.forEach { sig ->
+                                val isSel = sig.id == selectedSignal.id
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(if (isSel) Color(0xFF172554) else Color(0xFF111827))
+                                        .border(
+                                            1.dp,
+                                            if (isSel) Color(sig.colorHex) else Color(0xFF1E293B),
+                                            RoundedCornerShape(20.dp)
+                                        )
+                                        .clickable { selectedSignalId = sig.id }
+                                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                                ) {
+                                    Text(
+                                        text = "♫ ${sig.artist} — ${sig.title} (~${sig.distanceMeters} м)",
+                                        color = if (isSel) Color.White else Color(0xFFCBD5E1),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                1 -> {
+                    // Вкладка 1: ПОТОК МУЗЫКАЛЬНЫХ СИГНАЛОВ
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color(0xFF0A101F))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Медленный поток композиций рядом (сначала музыка, затем образ):",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp
+                        )
+
+                        nearbySignals.forEach { sig ->
+                            val isSelected = sig.id == selectedSignal.id
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (isSelected) Color(0xFF172554) else Color(0xFF111827))
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) Color(sig.colorHex) else Color(0xFF1E293B),
+                                        RoundedCornerShape(14.dp)
+                                    )
+                                    .clickable { selectedSignalId = sig.id }
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "♫ ${sig.artist} — ${sig.title}",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = "${sig.moodLabel} · ${sig.sourceName} · Резонанс ${sig.resonanceDays} дн.",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Text(
+                                    text = "~${sig.distanceMeters} м",
+                                    color = Color(sig.colorHex),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                2 -> {
+                    // Вкладка 2: МУЗЫКАЛЬНЫЕ СЛЕДЫ ВЕЧЕРА И КАРТА ГОРОДА
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color(0xFF0A101F))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "КАРТА ЗВУЧАНИЯ ГОРОДА (АНОНИМНАЯ АГРЕГАЦИЯ МЕСТ)",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        EchoStateRepository.cityZones.forEach { zone ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF111827))
+                                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = zone.placeName,
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = zone.dominantVibe,
+                                        color = Color(0xFF34D399),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Звучат: ${zone.recentArtists} · ${zone.listenersCount} сигналов за вечер",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = "СЕГОДНЯ РЯДОМ С ТОБОЙ ЗВУЧАЛИ (ВЕЧЕРНИЙ ДНЕВНИК)",
+                            color = Color(0xFFA78BFA),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        EchoStateRepository.eveningHistory.forEach { trace ->
+                            Text(
+                                text = "• $trace",
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Карточка выбранного слушателя (Музыкальный профиль без фото и лайков)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xFF0F172A))
+                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+                    .padding(18.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    GenerativeAvatarCanvas(
+                        color = Color(selectedSignal.colorHex),
+                        petals = selectedSignal.avatarPetals,
+                        modifier = Modifier.size(60.dp)
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "МУЗЫКАЛЬНЫЙ ОБРАЗ (ИИ-КУРАТОР)",
+                            color = Color(0xFF64748B),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = selectedSignal.personaTitle,
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Совместимость: ${selectedSignal.compatibilityPercent}% · ${selectedSignal.sourceName} · Настроение: ${selectedSignal.moodLabel}",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1E1B4B))
+                        .padding(10.dp)
+                ) {
+                    Text(
+                        text = "✦ Музыкальный резонанс · ${selectedSignal.resonanceDays} дней в общей музыкальной фазе · Встреча №${selectedSignal.encountersCount}",
+                        color = Color(0xFFC4B5FD),
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "Сейчас звучит: ${selectedSignal.artist} — ${selectedSignal.title}",
+                    color = Color(0xFFF1F5F9),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "«${selectedSignal.personaObservation}»",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 13.sp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Передать атмосферный отклик (вместо лайков и оценок):",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val symbols = listOf("🦇", "🌑", "🌊", "⚔", "🌲", "🎼", "☁")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    symbols.forEach { sym ->
+                        val count = selectedSignal.reactions[sym] ?: 0
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color(0xFF1E293B))
+                                .border(1.dp, Color(0xFF334155), CircleShape)
+                                .clickable {
+                                    EchoStateRepository.sendSymbolReaction(selectedSignal.id, sym)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = if (count > 0) "$sym $count" else sym,
+                                color = Color.White,
+                                fontSize = 14.sp
                             )
                         }
                     }
                 }
             }
         }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFF0D121E))
-                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(24.dp))
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                GenerativeAvatarCanvas(
-                    phase = wavePhase,
-                    seed = selectedSignal.artist.length + 3,
-                    modifier = Modifier.size(54.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "МУЗЫКАЛЬНОЕ ИМЯ (ИИ-КУРАТОР)",
-                        color = Color(0xFF64748B),
-                        fontSize = 10.sp
-                    )
-                    Text(
-                        text = selectedSignal.poeticName,
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Совместимость вкуса: ${selectedSignal.compatibility}% · ${selectedSignal.sourceApp}",
-                        color = Color(0xFF38BDF8),
-                        fontSize = 11.sp
-                    )
-                }
-            }
-
-            if (selectedSignal.resonanceDays != null) {
-                Text(
-                    text = "✦ ${selectedSignal.resonanceDays}: совпала ваша музыкальная фаза жизни",
-                    color = Color(0xFFC7D2FE),
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF1E1B4B))
-                        .padding(8.dp)
-                )
-            }
-
-            Text(
-                text = "«${selectedSignal.aiObservation}»",
-                color = Color(0xFFCBD5E1),
-                fontSize = 12.sp,
-                fontStyle = FontStyle.Italic
-            )
-
-            Text(
-                text = "Отправить музыкальное настроение (без лайков и оценок):",
-                color = Color(0xFF94A3B8),
-                fontSize = 11.sp
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                listOf("🦇", "🌑", "🌊", "⚔", "🌲", "🎼", "☁").forEach { symbol ->
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF161F33))
-                            .clickable {
-                                sentSymbolMessage = "Тихий знак $symbol отправлен для «${selectedSignal.poeticName}»"
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(text = symbol, fontSize = 16.sp)
-                    }
-                }
-            }
-
-            if (sentSymbolMessage.isNotEmpty()) {
-                Text(
-                    text = sentSymbolMessage,
-                    color = Color(0xFF818CF8),
-                    fontSize = 11.sp
-                )
-            }
-        }
     }
 
     if (showManualDialog) {
-        ManualTrackDialog(
-            onDismiss = { showManualDialog = false },
-            onSubmit = { artist, title ->
-                EchoStateRepository.updateDetectedMusic(artist, title, "Ручной режим")
-                showManualDialog = false
+        var artistInput by remember { mutableStateOf("") }
+        var titleInput by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showManualDialog = false },
+            containerColor = Color(0xFF0F172A),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFFCBD5E1),
+            title = { Text("Ручной музыкальный сигнал") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = artistInput,
+                        onValueChange = { artistInput = it },
+                        label = { Text("Исполнитель (например, Agalloch)") }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = titleInput,
+                        onValueChange = { titleInput = it },
+                        label = { Text("Композиция (например, Falling Snow)") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (artistInput.isNotBlank() || titleInput.isNotBlank()) {
+                            EchoStateRepository.updateMyPlayingTrack(
+                                artist = artistInput,
+                                title = titleInput,
+                                sourcePackage = "manual"
+                            )
+                        }
+                        showManualDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    Text("Транслировать в эфир")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualDialog = false }) {
+                    Text("Отмена", color = Color(0xFF94A3B8))
+                }
             }
         )
     }
 }
 
 @Composable
-fun GenerativeAvatarCanvas(phase: Float, seed: Int, modifier: Modifier = Modifier) {
-    Canvas(
-        modifier = modifier
-            .clip(CircleShape)
-            .background(Color(0xFF05070C))
-            .border(1.dp, Color(0xFF334155), CircleShape)
+fun InteractiveRadarField(
+    signals: List<EchoTrackSignal>,
+    selectedSignalId: String,
+    onSelectSignal: (EchoTrackSignal) -> Unit
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "radar_sweep")
+    val sweepAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 7000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "sweep_angle"
+    )
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "node_pulse"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(270.dp),
+        contentAlignment = Alignment.Center
     ) {
+        Canvas(
+            modifier = Modifier
+                .size(260.dp)
+                .pointerInput(signals) {
+                    detectTapGestures { tapOffset ->
+                        val cx = size.width / 2f
+                        val cy = size.height / 2f
+                        val maxR = (size.width.coerceAtMost(size.height) / 2f) * 0.88f
+
+                        val tapped = signals.minByOrNull { sig ->
+                            val rad = sig.angleDegrees * (PI.toFloat() / 180f)
+                            val r = maxR * sig.distanceRatio
+                            val sx = cx + r * cos(rad)
+                            val sy = cy + r * sin(rad)
+                            hypot(tapOffset.x - sx, tapOffset.y - sy)
+                        }
+                        if (tapped != null) {
+                            onSelectSignal(tapped)
+                        }
+                    }
+                }
+        ) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val maxR = (size.minDimension / 2f) * 0.88f
+
+            // Фоновое свечение радара
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFF0F2942), Color(0xFF070B14)),
+                    center = Offset(cx, cy),
+                    radius = maxR
+                ),
+                radius = maxR,
+                center = Offset(cx, cy)
+            )
+
+            // Концентрические кольца расстояний (~100м, ~200м, ~300м)
+            listOf(0.33f, 0.66f, 1.0f).forEach { frac ->
+                drawCircle(
+                    color = Color(0xFF1E293B),
+                    radius = maxR * frac,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 1.5f)
+                )
+            }
+
+            // Осевые линии
+            drawLine(
+                color = Color(0xFF1E293B),
+                start = Offset(cx - maxR, cy),
+                end = Offset(cx + maxR, cy),
+                strokeWidth = 1f
+            )
+            drawLine(
+                color = Color(0xFF1E293B),
+                start = Offset(cx, cy - maxR),
+                end = Offset(cx, cy + maxR),
+                strokeWidth = 1f
+            )
+
+            // Вращающийся луч сканирования эфира
+            val sweepRad = sweepAngle * (PI.toFloat() / 180f)
+            val beamEnd = Offset(
+                cx + maxR * cos(sweepRad),
+                cy + maxR * sin(sweepRad)
+            )
+            drawLine(
+                color = Color(0xFF38BDF8).copy(alpha = 0.45f),
+                start = Offset(cx, cy),
+                end = beamEnd,
+                strokeWidth = 2.5f
+            )
+
+            // Центр — сам пользователь
+            drawCircle(
+                color = Color(0xFF38BDF8).copy(alpha = 0.25f),
+                radius = 18f,
+                center = Offset(cx, cy)
+            )
+            drawCircle(
+                color = Color(0xFF38BDF8),
+                radius = 7f,
+                center = Offset(cx, cy)
+            )
+
+            // Сигналы вокруг
+            signals.forEach { sig ->
+                val rad = sig.angleDegrees * (PI.toFloat() / 180f)
+                val r = maxR * sig.distanceRatio
+                val sx = cx + r * cos(rad)
+                val sy = cy + r * sin(rad)
+                val isSelected = sig.id == selectedSignalId
+                val nodeColor = Color(sig.colorHex)
+
+                if (isSelected) {
+                    // Линия резонанса от центра к выбранному сигналу
+                    drawLine(
+                        color = nodeColor.copy(alpha = 0.55f),
+                        start = Offset(cx, cy),
+                        end = Offset(sx, sy),
+                        strokeWidth = 2f
+                    )
+                    drawCircle(
+                        color = nodeColor.copy(alpha = 0.28f),
+                        radius = 22f * pulse,
+                        center = Offset(sx, sy)
+                    )
+                }
+
+                drawCircle(
+                    color = nodeColor.copy(alpha = 0.2f),
+                    radius = 13f,
+                    center = Offset(sx, sy)
+                )
+                drawCircle(
+                    color = if (isSelected) Color.White else nodeColor,
+                    radius = if (isSelected) 8.5f else 6.5f,
+                    center = Offset(sx, sy)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun GenerativeAvatarCanvas(
+    color: Color,
+    petals: Int,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "avatar_pulse")
+    val phase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.283f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 5500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wave_phase"
+    )
+
+    Canvas(modifier = modifier) {
         val cx = size.width / 2f
         val cy = size.height / 2f
-        val baseR = (size.minDimension * 0.28f).coerceAtLeast(2f)
-        val petals = 4 + (seed % 5)
+        val baseR = (size.minDimension / 2f) * 0.68f
+
+        drawCircle(
+            color = color.copy(alpha = 0.16f),
+            radius = baseR * 1.2f,
+            center = Offset(cx, cy)
+        )
 
         val path = Path()
-        val steps = 48
+        val steps = 72
         for (i in 0..steps) {
-            val theta = (i.toFloat() / steps) * 6.28318f
-            val wave = sin(theta * petals + phase) * (baseR * 0.25f)
-            val r = (baseR + wave).coerceAtLeast(1f)
-            val x = cx + cos(theta) * r
-            val y = cy + sin(theta) * r
+            val angle = (i.toFloat() / steps) * (2f * PI.toFloat())
+            val wave = sin(angle * petals + phase) * (baseR * 0.22f)
+            val r = (baseR + wave).coerceAtLeast(2f)
+            val x = cx + r * cos(angle)
+            val y = cy + r * sin(angle)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         path.close()
 
         drawPath(
             path = path,
-            brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF818CF8), Color(0xFF38BDF8), Color.Transparent)
-            )
+            color = color.copy(alpha = 0.42f)
         )
         drawPath(
             path = path,
-            color = Color(0xFFA5B4FC),
-            style = Stroke(width = 2f)
+            color = color,
+            style = Stroke(width = 2.2f)
         )
     }
-}
-
-@Composable
-fun ManualTrackDialog(onDismiss: () -> Unit, onSubmit: (String, String) -> Unit) {
-    var artist by remember { mutableStateOf("Bohren & der Club of Gore") }
-    var title by remember { mutableStateOf("Prowler") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF0F172A),
-        title = {
-            Text("Поделиться треком вручную", color = Color.White, fontSize = 16.sp)
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = artist,
-                    onValueChange = { artist = it },
-                    label = { Text("Исполнитель") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Название трека") },
-                    singleLine = true
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSubmit(artist, title) }) {
-                Text("Транслировать в ЭХО", color = Color(0xFF818CF8))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена", color = Color(0xFF94A3B8))
-            }
-        }
-    )
 }
