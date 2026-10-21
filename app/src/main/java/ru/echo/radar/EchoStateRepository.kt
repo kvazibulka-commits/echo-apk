@@ -94,19 +94,42 @@ object EchoStateRepository {
     private val _incomingBanner = MutableStateFlow<IncomingReactionBanner?>(null)
     val incomingBanner: StateFlow<IncomingReactionBanner?> = _incomingBanner.asStateFlow()
 
+    val availableZones = listOf(
+        "Вечерняя улица",
+        "Парк Горького · Набережная",
+        "Сретенка · Камерные бары",
+        "Покровка · Ночные кофейни",
+        "Северный лесопарк"
+    )
+
+    private val _myCurrentZone = MutableStateFlow(availableZones.first())
+    val myCurrentZone: StateFlow<String> = _myCurrentZone.asStateFlow()
+
+    private val _liveCityZones = MutableStateFlow(
+        listOf(
+            CityZoneTrace("Парк Горького · Набережная", "Ambient / Post-Rock", "Hammock, Sigur Rós, Brian Eno", 14),
+            CityZoneTrace("Сретенка · Камерные бары", "Post-Punk / Darkwave", "Молчат Дома, Lebanon Hanover, The Cure", 9),
+            CityZoneTrace("Покровка · Ночные кофейни", "Trip-Hop / Nu-Jazz", "Portishead, Bohren & der Club of Gore", 11),
+            CityZoneTrace("Северный лесопарк", "Nordic Folk / Ambient", "Wardruna, Agalloch", 8)
+        )
+    )
+    val liveCityZones: StateFlow<List<CityZoneTrace>> = _liveCityZones.asStateFlow()
+    val cityZones: List<CityZoneTrace> get() = _liveCityZones.value
+
+    fun setMyZone(zone: String) {
+        _myCurrentZone.value = zone
+        thread(isDaemon = true) { syncWithLocalServer() }
+    }
+
     private val _eveningTraces = MutableStateFlow(
         listOf(
             "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
             "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel",
-            "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim",
-            "19:30 · Вечерний след у метро: Aphex Twin — #3 (Rhubarb)"
+            "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim"
         )
     )
     val eveningTraces: StateFlow<List<String>> = _eveningTraces.asStateFlow()
-
-    // Мостик совместимости со старой версией MainActivity.kt
-    val eveningHistory: List<String>
-        get() = _eveningTraces.value
+    val eveningHistory: List<String> get() = _eveningTraces.value
 
     private val sessionTrackHistory = mutableListOf<Pair<String, String>>()
     private var sameArtistStreak = 1
@@ -239,13 +262,6 @@ object EchoStateRepository {
         )
     )
     val nearbySignals: StateFlow<List<EchoTrackSignal>> = _nearbySignals.asStateFlow()
-
-    val cityZones = listOf(
-        CityZoneTrace("Парк Горького · Набережная", "Ambient / Post-Rock", "Hammock, Sigur Rós, Brian Eno", 14),
-        CityZoneTrace("Сретенка · Камерные бары", "Post-Punk / Darkwave", "Молчат Дома, Lebanon Hanover, The Cure", 9),
-        CityZoneTrace("Покровка · Ночные кофейни", "Trip-Hop / Nu-Jazz", "Portishead, Bohren & der Club of Gore", 11),
-        CityZoneTrace("Университетский квартал", "Midwest Emo / Shoegaze", "Slowdive, American Football, Alcest", 18)
-    )
 
     init {
         thread(isDaemon = true, name = "EchoServerSync") {
@@ -455,6 +471,7 @@ object EchoStateRepository {
             put("moodLabel", myTrack.moodLabel)
             put("colorHex", myTrack.colorHex)
             put("avatarPetals", myTrack.avatarPetals)
+            put("zoneName", _myCurrentZone.value)
         }
 
         for (host in candidates) {
@@ -561,6 +578,23 @@ object EchoStateRepository {
                 traces.add(tracesArr.getString(i))
             }
             _eveningTraces.value = traces
+        }
+
+        val zonesArr = json.optJSONArray("cityZones")
+        if (zonesArr != null && zonesArr.length() > 0) {
+            val parsedZones = mutableListOf<CityZoneTrace>()
+            for (i in 0 until zonesArr.length()) {
+                val z = zonesArr.getJSONObject(i)
+                parsedZones.add(
+                    CityZoneTrace(
+                        placeName = z.optString("placeName", "Вечерняя улица"),
+                        dominantVibe = z.optString("dominantVibe", "Ночное созерцание"),
+                        recentArtists = z.optString("recentArtists", ""),
+                        listenersCount = z.optInt("listenersCount", 1)
+                    )
+                )
+            }
+            _liveCityZones.value = parsedZones
         }
     }
 
