@@ -36,10 +36,7 @@ data class EchoTrackSignal(
     val encountersCount: Int,
     val colorHex: Long,
     val avatarPetals: Int,
-    val reactions: Map<String, Int>,
-    val energyPercent: Int = 60,
-    val duskPercent: Int = 75,
-    val warmthPercent: Int = 65
+    val reactions: Map<String, Int>
 )
 
 data class SavedEchoTrack(
@@ -69,23 +66,13 @@ data class CuratedPersona(
     val observation: String,
     val colorHex: Long,
     val petals: Int,
-    val vibeVector: Int,
-    val energyPercent: Int,
-    val duskPercent: Int,
-    val warmthPercent: Int
+    val vibeVector: Int
 )
 
-private data class CuratorCluster(
-    val id: String,
-    val moodLabels: List<String>,
+private data class ClusterLexicon(
     val archetypes: List<String>,
     val epithets: List<String>,
-    val realms: List<String>,
-    val colors: List<Long>,
-    val baseEnergy: Int,
-    val baseDusk: Int,
-    val baseWarmth: Int,
-    val poeticNuance: String
+    val realms: List<String>
 )
 
 object EchoStateRepository {
@@ -101,11 +88,8 @@ object EchoStateRepository {
     @Volatile
     private var customServerHost: String? = null
 
-    private val _serverConnected = MutableStateFlow(false)
-    val serverConnected: StateFlow<Boolean> = _serverConnected.asStateFlow()
-
-    private val _activeServerHost = MutableStateFlow("10.0.2.2:8080")
-    val activeServerHost: StateFlow<String> = _activeServerHost.asStateFlow()
+    @Volatile
+    private var serverOnline: Boolean = false
 
     private val _presenceEnabled = MutableStateFlow(true)
     val presenceEnabled: StateFlow<Boolean> = _presenceEnabled.asStateFlow()
@@ -139,6 +123,7 @@ object EchoStateRepository {
         )
     )
     val liveCityZones: StateFlow<List<CityZoneTrace>> = _liveCityZones.asStateFlow()
+    val cityZones: List<CityZoneTrace> get() = _liveCityZones.value
 
     fun setMyZone(zone: String) {
         _myCurrentZone.value = zone
@@ -146,135 +131,71 @@ object EchoStateRepository {
     }
 
     fun setCustomServerIp(ipAddress: String) {
-        val rawHost = ipAddress.removePrefix("ip:").removePrefix("IP:").removePrefix("http://").trim()
-        if (rawHost.isEmpty()) {
-            customServerHost = null
-            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                ?.edit()?.remove(KEY_CUSTOM_HOST)?.apply()
-        } else {
-            val formatted = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
-            customServerHost = formatted
-            _activeServerHost.value = formatted
-            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                ?.edit()?.putString(KEY_CUSTOM_HOST, formatted)?.apply()
-        }
+        val rawHost = ipAddress.removePrefix("ip:").removePrefix("IP:").trim()
+        customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
+
+        appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
+
         thread(isDaemon = true) { syncWithLocalServer() }
     }
 
     private val _eveningTraces = MutableStateFlow(
         listOf(
-            "✦ ИИ-куратор: Ожидание первой музыкальной волны...",
             "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
-            "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel"
+            "21:15 · Повторная встреча (3-й раз): слушатель Burial — Archangel",
+            "20:50 · Музыкальный резонанс в парке: Dead Can Dance — Host of Seraphim"
         )
     )
     val eveningTraces: StateFlow<List<String>> = _eveningTraces.asStateFlow()
+    val eveningHistory: List<String> get() = _eveningTraces.value
 
     private val sessionTrackHistory = mutableListOf<Pair<String, String>>()
+    private val recentUsedWords = ArrayDeque<String>()
     private var sameArtistStreak = 1
     private var lastBaseSourceName = "Системный перехват Android"
 
-    // 6 смысловых эстетических кластеров ИИ-куратора
-    private val curatorClusters = listOf(
-        CuratorCluster(
-            id = "folklore",
-            moodLabels = listOf(
-                "Ренессанс-фолк и лунная баллада",
-                "Северный ритуал и древний лес",
-                "Акустическая баллада и тёплый фолк",
-                "Сумеречный фолк и сказания"
-            ),
-            archetypes = listOf("Хранитель", "Менестрель", "Летописец", "Путник", "Сказитель", "Часовой"),
-            epithets = listOf("северных", "вересковых", "полуночных", "древних", "туманных", "лесных"),
-            realms = listOf("баллад", "легенд", "троп", "костров", "ручьёв", "преданий"),
-            colors = listOf(0xFF34D399L, 0xFF10B981L, 0xFFFBBF24L, 0xFF6EE7B7L),
-            baseEnergy = 55,
-            baseDusk = 70,
-            baseWarmth = 88,
-            poeticNuance = "Тёплая акустическая фактура пробуждает образы старинных маршрутов и живого огня."
+    private val avatarColorPalette = listOf(
+        0xFF38BDF8L, 0xFFA78BFAL, 0xFF34D399L, 0xFFF472B6L, 0xFFFBBF24L,
+        0xFF60A5FAL, 0xFFFB7185L, 0xFF2DD4BFL, 0xFF818CF8L, 0xFFC084FCL,
+        0xFF4ADE80L, 0xFFF97316L, 0xFFE879F9L, 0xFF22D3EEL, 0xFFA3E635L,
+        0xFFEF4444L, 0xFF93C5FDL, 0xFFD8B4FEL, 0xFF6EE7B7L, 0xFFFDA4AFL
+    )
+
+    private val clusterLexicons = mapOf(
+        "folklore" to ClusterLexicon(
+            archetypes = listOf("Менестрель", "Хранитель", "Летописец", "Следопыт", "Звездочёт", "Скальд", "Пилигрим", "Вестник", "Травник", "Бард"),
+            epithets = listOf("вересковых", "рунических", "заповедных", "курганных", "полуденных", "костровых", "лунных", "древних", "лесных", "озёрных"),
+            realms = listOf("баллад", "преданий", "чащоб", "фьордов", "капищ", "троп", "холмов", "святилищ", "былин", "истоков")
         ),
-        CuratorCluster(
-            id = "postpunk",
-            moodLabels = listOf(
-                "Холодный пост-панк и неон",
-                "Сумеречный нью-вейв",
-                "Готический синт и тени кварталов"
-            ),
-            archetypes = listOf("Навигатор", "Сталкер", "Хроникёр", "Созерцатель", "Призрак", "Смотритель"),
-            epithets = listOf("неоновых", "бетонных", "полуночных", "дождливых", "холодных", "пустынных"),
-            realms = listOf("кварталов", "переулков", "крыш", "мостов", "фонарей", "высоток"),
-            colors = listOf(0xFF38BDF8L, 0xFF818CF8L, 0xFF60A5FAL, 0xFF22D3EEL),
-            baseEnergy = 68,
-            baseDusk = 92,
-            baseWarmth = 38,
-            poeticNuance = "Отстранённая пульсация бас-гитары и эхо ночных проспектов."
+        "melancholy_rock" to ClusterLexicon(
+            archetypes = listOf("Архивариус", "Хроникёр", "Созерцатель", "Киномеханик", "Наблюдатель", "Реставратор", "Поэт", "Переводчик", "Коллекционер", "Свидетель"),
+            epithets = listOf("панельных", "кассетных", "дождливых", "чердачных", "трамвайных", "осенних", "полуночных", "фонарных", "оконных", "бессонных"),
+            realms = listOf("кварталов", "переулков", "мостов", "крыш", "набережных", "перронов", "проспектов", "витрин", "маршрутов", "карнизов")
         ),
-        CuratorCluster(
-            id = "electronic",
-            moodLabels = listOf(
-                "Ночной трип-хоп и винил",
-                "Дождь и винил",
-                "Гипнотический электронный пульс",
-                "Городской даб и радиоволны"
-            ),
-            archetypes = listOf("Дешифровщик", "Ловец", "Алхимик", "Пилот", "Архивариус", "Оператор"),
-            epithets = listOf("призрачных", "аналоговых", "глубоких", "винтажных", "скрытых", "мерцающих"),
-            realms = listOf("радиоволн", "частот", "импульсов", "пластинок", "эхолотов", "лабиринтов"),
-            colors = listOf(0xFFA78BFAL, 0xFFC084FCL, 0xFFE879F9L, 0xFF2DD4BFL),
-            baseEnergy = 64,
-            baseDusk = 86,
-            baseWarmth = 62,
-            poeticNuance = "Шорох виниловой дорожки переплетается с гипнотическим ритмом ночного мегаполиса."
+        "night_electronic" to ClusterLexicon(
+            archetypes = listOf("Дешифровщик", "Навигатор", "Алхимик", "Картограф", "Ловец", "Астроном", "Инженер", "Часовщик", "Радист", "Куратор"),
+            epithets = listOf("неоновых", "аналоговых", "призрачных", "голографических", "ламповых", "магнитных", "зеркальных", "орбитальных", "спектральных", "невесомых"),
+            realms = listOf("частот", "радиоволн", "сновидений", "пластинок", "миражей", "созвездий", "лабиринтов", "эхолотов", "сигналов", "орбит")
         ),
-        CuratorCluster(
-            id = "ambient",
-            moodLabels = listOf(
-                "Глубокий эмбиент-эфир",
-                "Кинематографичный эмбиент и созерцание",
-                "Космическая невесомость"
-            ),
-            archetypes = listOf("Астроном", "Проводник", "Собиратель", "Свидетель", "Картограф", "Хранитель"),
-            epithets = listOf("невесомых", "звёздных", "хрустальных", "тихих", "бесконечных", "зеркальных"),
-            realms = listOf("горизонтов", "сновидений", "созвездий", "туманов", "орбит", "приливов"),
-            colors = listOf(0xFF60A5FAL, 0xFF38BDF8L, 0xFF93C5FDL, 0xFFD8B4FEL),
-            baseEnergy = 32,
-            baseDusk = 80,
-            baseWarmth = 74,
-            poeticNuance = "Музыка растворяет границы времени, превращая маршрут в созерцательную паузу."
+        "heavy" to ClusterLexicon(
+            archetypes = listOf("Командор", "Кузнец", "Буревестник", "Фортификатор", "Лоцман", "Дозорный", "Механик", "Штурман", "Бастион", "Капитан"),
+            epithets = listOf("штормовых", "грозовых", "стальных", "базальтовых", "вулканических", "громовых", "индустриальных", "раскалённых", "железных", "гранитных"),
+            realms = listOf("бастионов", "реакторов", "рифов", "кратеров", "ущелий", "магистралей", "турбин", "монолитов", "разломов", "крепостей")
         ),
-        CuratorCluster(
-            id = "heavy",
-            moodLabels = listOf(
-                "Тяжёлый штормовой рифф",
-                "Индустриальный пульс",
-                "Электрический драйв и катарсис"
-            ),
-            archetypes = listOf("Кузнец", "Воин", "Дирижёр", "Охотник", "Пилот", "Хранитель"),
-            epithets = listOf("штормовых", "грозовых", "электрических", "железных", "пламенных", "суровых"),
-            realms = listOf("бастионов", "вихрей", "разрядов", "монолитов", "горизонтов", "симфоний"),
-            colors = listOf(0xFFF97316L, 0xFFFB7185L, 0xFFEF4444L, 0xFFFBBF24L),
-            baseEnergy = 95,
-            baseDusk = 84,
-            baseWarmth = 52,
-            poeticNuance = "Плотная стена гитарного звука заряжает пространство вокруг высокой кинетической энергией."
-        ),
-        CuratorCluster(
-            id = "melancholy_rock",
-            moodLabels = listOf(
-                "Тёплая гитарная меланхолия",
-                "Гитарная меланхолия и ночной маршрут",
-                "Гитарная невесомость и шугейз",
-                "Бархатный ночной инди-эфир"
-            ),
-            archetypes = listOf("Архивариус", "Реставратор", "Поэт", "Странник", "Слушатель", "Коллекционер"),
-            epithets = listOf("забытых", "тёплых", "осенних", "ламповых", "бархатных", "далёких"),
-            realms = listOf("кассет", "маршрутов", "воспоминаний", "отголосков", "магнитных лент", "огней"),
-            colors = listOf(0xFF38BDF8L, 0xFFF472B6L, 0xFF4ADE80L, 0xFFFDA4AFL),
-            baseEnergy = 62,
-            baseDusk = 72,
-            baseWarmth = 82,
-            poeticNuance = "Мелодичные гитарные переборы создают вокруг вас камерное, доверительное поле."
+        "general" to ClusterLexicon(
+            archetypes = listOf("Проводник", "Слушатель", "Искатель", "Пилот", "Дирижёр", "Смотритель", "Исследователь", "Собиратель", "Странник", "Охотник"),
+            epithets = listOf("вечерних", "тихих", "скрытых", "мерцающих", "далёких", "бархатных", "хрустальных", "заснеженных", "таинственных", "чистых"),
+            realms = listOf("отголосков", "симфоний", "станций", "воспоминаний", "резонансов", "импульсов", "огней", "океанов", "теней", "сюжетов")
         )
+    )
+
+    private val moodLabels = listOf(
+        "Ночное созерцание", "Холодный пост-панк и неон", "Тёплая гитарная меланхолия",
+        "Северный ритуал и древний лес", "Ночной трип-хоп и винил", "Тяжёлый штормовой рифф",
+        "Кинематографичный эмбиент и созерцание", "Шугейз и туманный дрим-поп", "Пост-рок и широкие горизонты",
+        "Бархатный ночной дарк-джаз", "Сумеречный неофолк и легенды", "Ночной синтвейв и ретро-неон",
+        "Акустическая баллада и тёплый фолк", "Ренессанс-фолк и лунная баллада", "Гипнотический электронный пульс"
     )
 
     private val _myCurrentTrack = MutableStateFlow(
@@ -286,18 +207,15 @@ object EchoStateRepository {
             distanceMeters = 0,
             angleDegrees = 0f,
             distanceRatio = 0f,
-            personaTitle = "Архивариус ночных шорохов",
-            personaObservation = "ИИ-куратор готов распознать вашу волну, вычислить 3 оси звучания и найти созвучных людей рядом.",
+            personaTitle = "Проводник вечерних отголосков",
+            personaObservation = "Ваш литературный образ и геометрия аватара перестраиваются под каждую композицию.",
             moodLabel = "Ночное созерцание",
             compatibilityPercent = 100,
             resonanceDays = 0,
             encountersCount = 1,
             colorHex = 0xFF38BDF8L,
             avatarPetals = 7,
-            reactions = emptyMap(),
-            energyPercent = 52,
-            duskPercent = 78,
-            warmthPercent = 70
+            reactions = emptyMap()
         )
     )
     val myCurrentTrack: StateFlow<EchoTrackSignal> = _myCurrentTrack.asStateFlow()
@@ -309,70 +227,60 @@ object EchoStateRepository {
                 artist = "Radiohead",
                 title = "Weird Fishes / Arpeggi",
                 sourceName = "Яндекс Музыка",
-                distanceMeters = 95,
-                angleDegrees = 42f,
-                distanceRatio = 0.38f,
-                personaTitle = "Архивариус забытых кассет",
-                personaObservation = "В последние недели выбирает длинные гитарные композиции с медленным развитием.",
+                distanceMeters = 110,
+                angleDegrees = 38f,
+                distanceRatio = 0.42f,
+                personaTitle = "Архивариус кассетных переулков",
+                personaObservation = "В последние недели всё чаще выбирает длинные гитарные композиции с медленным развитием.",
                 moodLabel = "Тёплая гитарная меланхолия",
                 compatibilityPercent = 96,
                 resonanceDays = 19,
                 encountersCount = 3,
                 colorHex = 0xFF38BDF8L,
                 avatarPetals = 6,
-                reactions = mapOf("🌊" to 4, "🌑" to 2, "🎼" to 3),
-                energyPercent = 64,
-                duskPercent = 74,
-                warmthPercent = 85
+                reactions = mapOf("🌊" to 4, "🌑" to 2, "🎼" to 3)
             ),
             EchoTrackSignal(
                 id = "bot_2",
                 artist = "Wardruna",
                 title = "Helvegen",
                 sourceName = "VK Музыка",
-                distanceMeters = 170,
-                angleDegrees = 140f,
-                distanceRatio = 0.64f,
-                personaTitle = "Хранитель северных лесов",
-                personaObservation = "Слушает нордический фолк, ренессанс-баллады и акустический эмбиент на вечерних маршрутах.",
+                distanceMeters = 185,
+                angleDegrees = 135f,
+                distanceRatio = 0.68f,
+                personaTitle = "Скальд рунических фьордов",
+                personaObservation = "Слушает нордический фолк и ритуальный эмбиент во время вечерних маршрутов.",
                 moodLabel = "Северный ритуал и древний лес",
                 compatibilityPercent = 91,
                 resonanceDays = 12,
                 encountersCount = 2,
                 colorHex = 0xFF34D399L,
                 avatarPetals = 5,
-                reactions = mapOf("🌲" to 6, "⚔" to 2, "🌑" to 1),
-                energyPercent = 58,
-                duskPercent = 82,
-                warmthPercent = 88
+                reactions = mapOf("🌲" to 6, "⚔" to 2, "🌑" to 1)
             ),
             EchoTrackSignal(
                 id = "bot_3",
                 artist = "Burial",
                 title = "Archangel",
                 sourceName = "Poweramp FLAC",
-                distanceMeters = 75,
-                angleDegrees = 235f,
-                distanceRatio = 0.30f,
-                personaTitle = "Проводник ночных туманов",
-                personaObservation = "Уходит от ломаных ритмов в сторону глубокого ночного гаража и даб-атмосферы.",
+                distanceMeters = 85,
+                angleDegrees = 225f,
+                distanceRatio = 0.33f,
+                personaTitle = "Дешифровщик ламповых радиоволн",
+                personaObservation = "Постепенно уходит от ломаных ритмов в сторону глубокого ночного дабстепа и гаража.",
                 moodLabel = "Дождь и винил",
                 compatibilityPercent = 94,
                 resonanceDays = 24,
                 encountersCount = 5,
                 colorHex = 0xFFA78BFAL,
                 avatarPetals = 8,
-                reactions = mapOf("🦇" to 3, "🌑" to 5, "☁" to 4),
-                energyPercent = 60,
-                duskPercent = 92,
-                warmthPercent = 64
+                reactions = mapOf("🦇" to 3, "🌑" to 5, "☁" to 4)
             )
         )
     )
     val nearbySignals: StateFlow<List<EchoTrackSignal>> = _nearbySignals.asStateFlow()
 
     init {
-        // 1. Автопоиск сервера в локальной сети (UDP-бродкаст на порту 8888)
         thread(isDaemon = true, name = "EchoUdpDiscovery") {
             try {
                 val socket = DatagramSocket(8888).apply {
@@ -388,12 +296,9 @@ object EchoStateRepository {
                         val discoveredIp = packet.address.hostAddress
                         if (!discoveredIp.isNullOrEmpty()) {
                             val targetHost = "$discoveredIp:$serverPort"
-                            val savedManual = appContext
-                                ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                                ?.getString(KEY_CUSTOM_HOST, null)
-                            if (savedManual.isNullOrEmpty() && customServerHost != targetHost) {
+                            if (customServerHost != targetHost && appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.getString(KEY_CUSTOM_HOST, null).isNullOrEmpty()) {
                                 customServerHost = targetHost
-                                _activeServerHost.value = targetHost
+                                serverOnline = true
                             }
                         }
                     }
@@ -402,7 +307,6 @@ object EchoStateRepository {
             }
         }
 
-        // 2. Фоновый поток синхронизации с сервером каждые 2.5 секунды
         thread(isDaemon = true, name = "EchoServerSync") {
             while (true) {
                 try {
@@ -433,7 +337,6 @@ object EchoStateRepository {
         val savedHost = prefs.getString(KEY_CUSTOM_HOST, null)
         if (!savedHost.isNullOrEmpty()) {
             customServerHost = savedHost
-            _activeServerHost.value = savedHost
         }
 
         val rawJson = prefs.getString(KEY_SAVED_TRACKS, "[]") ?: "[]"
@@ -526,13 +429,8 @@ object EchoStateRepository {
     }
 
     fun updateMyPlayingTrack(artist: String, title: String, sourcePackage: String) {
-        val cleanArtist = artist.trim().take(90).ifEmpty { "Неизвестный исполнитель" }
-        val cleanTitle = title.trim().take(90).ifEmpty { "Без названия" }
-
-        // Защита от случайной вставки кода или IP в название трека
-        if (cleanArtist.startsWith("package ") || cleanArtist.startsWith("import ") || cleanArtist.startsWith("http://")) {
-            return
-        }
+        val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
+        val cleanTitle = title.trim().ifEmpty { "Без названия" }
 
         val current = _myCurrentTrack.value
         if (current.artist.equals(cleanArtist, ignoreCase = true) &&
@@ -556,14 +454,15 @@ object EchoStateRepository {
         }
 
         lastBaseSourceName = mapPackageToName(sourcePackage)
-        val displaySource = if (_serverConnected.value) "$lastBaseSourceName · Эфир ПК ●" else lastBaseSourceName
+        val displaySource = if (serverOnline) "$lastBaseSourceName · Эфир ПК ●" else lastBaseSourceName
 
         val curated = generateDynamicPersona(
             artist = cleanArtist,
             title = cleanTitle,
             previousArtist = previousArtist,
             isSameArtist = isSameArtist,
-            streak = sameArtistStreak
+            streak = sameArtistStreak,
+            totalTracksInSession = sessionTrackHistory.size
         )
 
         _myCurrentTrack.value = current.copy(
@@ -574,10 +473,7 @@ object EchoStateRepository {
             moodLabel = curated.moodLabel,
             personaObservation = curated.observation,
             colorHex = curated.colorHex,
-            avatarPetals = curated.petals,
-            energyPercent = curated.energyPercent,
-            duskPercent = curated.duskPercent,
-            warmthPercent = curated.warmthPercent
+            avatarPetals = curated.petals
         )
 
         recalculateNearbyCompatibility(curated.vibeVector)
@@ -601,9 +497,9 @@ object EchoStateRepository {
 
     private fun syncWithLocalServer() {
         val candidates = mutableListOf<String>()
-        customServerHost?.let { if (it.isNotBlank()) candidates.add(it) }
-        if (!candidates.contains("10.0.2.2:8080")) candidates.add("10.0.2.2:8080")
-        if (!candidates.contains("127.0.0.1:8080")) candidates.add("127.0.0.1:8080")
+        customServerHost?.let { candidates.add(it) }
+        candidates.add("10.0.2.2:8080")
+        candidates.add("127.0.0.1:8080")
 
         val myTrack = _myCurrentTrack.value
         val payload = JSONObject().apply {
@@ -638,19 +534,20 @@ object EchoStateRepository {
                     val responseText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
                         it.readText()
                     }
-                    _serverConnected.value = true
-                    _activeServerHost.value = host
                     handleServerResponse(JSONObject(responseText))
+                    serverOnline = true
                     return
                 }
             } catch (_: Exception) {
             }
         }
-        _serverConnected.value = false
+        serverOnline = false
     }
 
     private fun handleServerResponse(json: JSONObject) {
         val refinedMood = json.optString("myRefinedMood", "")
+        val serverPersona = json.optString("myCuratedPersona", "")
+        val serverObs = json.optString("myCuratedObservation", "")
         val current = _myCurrentTrack.value
         val updatedSource = "$lastBaseSourceName · Эфир ПК ●"
 
@@ -674,6 +571,8 @@ object EchoStateRepository {
         }
 
         _myCurrentTrack.value = current.copy(
+            personaTitle = if (serverPersona.isNotEmpty()) serverPersona else current.personaTitle,
+            personaObservation = if (serverObs.isNotEmpty()) serverObs else current.personaObservation,
             moodLabel = if (refinedMood.isNotEmpty()) refinedMood else current.moodLabel,
             sourceName = updatedSource,
             reactions = parsedMyReactions
@@ -684,10 +583,6 @@ object EchoStateRepository {
             val list = mutableListOf<EchoTrackSignal>()
             for (i in 0 until arr.length()) {
                 val item = arr.getJSONObject(i)
-                val artistStr = item.optString("artist", "Неизвестный")
-                val titleStr = item.optString("title", "Без названия")
-                val moodStr = item.optString("moodLabel", "Ночное созерцание")
-
                 val reactObj = item.optJSONObject("reactions")
                 val reactMap = mutableMapOf<String, Int>()
                 if (reactObj != null) {
@@ -697,31 +592,24 @@ object EchoStateRepository {
                         reactMap[k] = reactObj.optInt(k, 0)
                     }
                 }
-
-                val cluster = matchCluster(artistStr.lowercase(), titleStr.lowercase(), moodStr.lowercase())
-                val h = abs((artistStr + titleStr).hashCode())
-
                 list.add(
                     EchoTrackSignal(
                         id = item.optString("id", "sig_$i"),
-                        artist = artistStr,
-                        title = titleStr,
+                        artist = item.optString("artist", "Неизвестный"),
+                        title = item.optString("title", "Без названия"),
                         sourceName = item.optString("sourceName", "Эфир"),
                         distanceMeters = item.optInt("distanceMeters", 120),
                         angleDegrees = item.optDouble("angleDegrees", 45.0).toFloat(),
                         distanceRatio = item.optDouble("distanceRatio", 0.5).toFloat(),
                         personaTitle = item.optString("personaTitle", "Странник эфира"),
                         personaObservation = item.optString("personaObservation", ""),
-                        moodLabel = moodStr,
+                        moodLabel = item.optString("moodLabel", "Ночное созерцание"),
                         compatibilityPercent = item.optInt("compatibilityPercent", 92),
                         resonanceDays = item.optInt("resonanceDays", 10),
                         encountersCount = item.optInt("encountersCount", 2),
                         colorHex = item.optLong("colorHex", 0xFF38BDF8L),
                         avatarPetals = item.optInt("avatarPetals", 6),
-                        reactions = reactMap,
-                        energyPercent = (cluster.baseEnergy + (h % 19) - 9).coerceIn(25, 98),
-                        duskPercent = (cluster.baseDusk + ((h / 3) % 17) - 8).coerceIn(30, 99),
-                        warmthPercent = (cluster.baseWarmth + ((h / 7) % 19) - 9).coerceIn(25, 98)
+                        reactions = reactMap
                     )
                 )
             }
@@ -757,9 +645,9 @@ object EchoStateRepository {
 
     private fun postReactionToServer(targetId: String, symbol: String) {
         val candidates = mutableListOf<String>()
-        customServerHost?.let { if (it.isNotBlank()) candidates.add(it) }
-        if (!candidates.contains("10.0.2.2:8080")) candidates.add("10.0.2.2:8080")
-        if (!candidates.contains("127.0.0.1:8080")) candidates.add("127.0.0.1:8080")
+        customServerHost?.let { candidates.add(it) }
+        candidates.add("10.0.2.2:8080")
+        candidates.add("127.0.0.1:8080")
 
         val body = JSONObject().apply {
             put("targetId", targetId)
@@ -783,23 +671,14 @@ object EchoStateRepository {
         }
     }
 
-    private fun matchCluster(artistNorm: String, titleNorm: String, extraText: String = ""): CuratorCluster {
-        val text = " $artistNorm $titleNorm $extraText "
+    private fun resolveClusterKey(mood: String): String {
+        val m = mood.lowercase()
         return when {
-            listOf("blackmore", "renaissance", "faun", "мельница", "medieval", "celtic", "wardruna", "agalloch", "heilung", "фолк", "лес", "лун", "moon", "forest", "skald", "аркона").any { text.contains(it) } ->
-                curatorClusters[0] // folklore
-            listOf("кино", "молчат", "cure", "joy division", "дурной", "post-punk", "пост-панк", "неон", "lebanon", "перемотка", "буерак", "наутилус", "агата", "ночь").any { text.contains(it) } ->
-                curatorClusters[1] // postpunk
-            listOf("burial", "massive", "portishead", "tricky", "винил", "trip-hop", "трип-хоп", "bonobo", "prodigy", "электрон", "dub", "synth").any { text.contains(it) } ->
-                curatorClusters[2] // electronic
-            listOf("aphex", "ambient", "эмбиент", "eno", "coil", "drone", "hammock", "sigur", "dead can dance", "sleep", "dream", "космос").any { text.contains(it) } ->
-                curatorClusters[3] // ambient
-            listOf("metallica", "doom", "metal", "slayer", "megadeth", "rammstein", "ария", "кипелов", "sabbath", "opeth", "katatonia", "тяжёл", "шторм").any { text.contains(it) } ->
-                curatorClusters[4] // heavy
-            else -> {
-                val idx = abs(artistNorm.hashCode()) % curatorClusters.size
-                curatorClusters[idx]
-            }
+            m.contains("фолк") || m.contains("ритуал") || m.contains("баллада") || m.contains("средневеков") -> "folklore"
+            m.contains("пост-панк") || m.contains("меланхолия") || m.contains("шугейз") || m.contains("пост-рок") -> "melancholy_rock"
+            m.contains("трип-хоп") || m.contains("эмбиент") || m.contains("винил") || m.contains("синтвейв") || m.contains("джаз") || m.contains("электрон") -> "night_electronic"
+            m.contains("рифф") || m.contains("дум") || m.contains("индустриал") || m.contains("драйв") -> "heavy"
+            else -> "general"
         }
     }
 
@@ -808,38 +687,78 @@ object EchoStateRepository {
         title: String,
         previousArtist: String?,
         isSameArtist: Boolean,
-        streak: Int
+        streak: Int,
+        totalTracksInSession: Int
     ): CuratedPersona {
         val artistNorm = artist.lowercase().trim()
         val titleNorm = title.lowercase().trim()
+        val fullKey = "$artistNorm::$titleNorm"
 
-        val cluster = matchCluster(artistNorm, titleNorm)
         val artistHash = abs(artistNorm.hashCode() * 31 + artistNorm.sumOf { it.code * 17 })
         val titleHash = abs(titleNorm.hashCode() * 37 + titleNorm.sumOf { it.code * 13 })
-        val combinedHash = abs(artistHash xor titleHash)
+        val combinedHash = abs(fullKey.hashCode() xor (artistHash + titleHash))
 
-        val arch = cluster.archetypes[artistHash % cluster.archetypes.size]
-        val ep = cluster.epithets[(combinedHash / 3) % cluster.epithets.size]
-        val realm = cluster.realms[(combinedHash / 7 + streak) % cluster.realms.size]
+        val mood = detectMoodOrFallback(artistNorm, titleNorm, combinedHash)
+        val clusterKey = resolveClusterKey(mood)
+        val lexicon = clusterLexicons[clusterKey] ?: clusterLexicons.getValue("general")
 
-        val generatedTitle = "$arch $ep $realm"
-        val mood = cluster.moodLabels[combinedHash % cluster.moodLabels.size]
-        val selectedColor = cluster.colors[combinedHash % cluster.colors.size]
+        // Собираем слова, которые уже заняты активными сигналами на радаре и недавними треками
+        val forbiddenWords = mutableSetOf<String>()
+        forbiddenWords.addAll(recentUsedWords)
+        _nearbySignals.value.forEach { sig ->
+            sig.personaTitle.split(" ").forEach { w -> forbiddenWords.add(w.lowercase()) }
+        }
+
+        val archs = lexicon.archetypes
+        val epis = lexicon.epithets
+        val realms = lexicon.realms
+
+        var chosenArch = archs[artistHash % archs.size]
+        for (i in archs.indices) {
+            val cand = archs[(artistHash + i) % archs.size]
+            if (cand.lowercase() !in forbiddenWords) {
+                chosenArch = cand
+                break
+            }
+        }
+
+        var chosenEpi = epis[(combinedHash / 5) % epis.size]
+        for (i in epis.indices) {
+            val cand = epis[(combinedHash / 5 + i) % epis.size]
+            if (cand.lowercase() !in forbiddenWords) {
+                chosenEpi = cand
+                break
+            }
+        }
+
+        var chosenRealm = realms[(titleHash / 7) % realms.size]
+        for (i in realms.indices) {
+            val cand = realms[(titleHash / 7 + i) % realms.size]
+            if (cand.lowercase() !in forbiddenWords) {
+                chosenRealm = cand
+                break
+            }
+        }
+
+        listOf(chosenArch.lowercase(), chosenEpi.lowercase(), chosenRealm.lowercase()).forEach { w ->
+            recentUsedWords.addLast(w)
+            if (recentUsedWords.size > 24) recentUsedWords.removeFirst()
+        }
+
+        val generatedTitle = "$chosenArch $chosenEpi $chosenRealm"
+        val colorIdx = (combinedHash + totalTracksInSession * 3) % avatarColorPalette.size
+        val selectedColor = avatarColorPalette[colorIdx]
         val petals = 4 + (combinedHash % 9)
-
-        val energy = (cluster.baseEnergy + (titleHash % 21) - 10).coerceIn(22, 99)
-        val dusk = (cluster.baseDusk + (artistHash % 19) - 9).coerceIn(28, 99)
-        val warmth = (cluster.baseWarmth + (combinedHash % 21) - 10).coerceIn(24, 99)
 
         val observation = when {
             previousArtist == null ->
-                "✦ ${cluster.poeticNuance} ИИ-куратор зафиксировал ваш образ: «$generatedTitle»."
+                "ИИ-куратор настроил ваш первичный эфир на волну «$artist». Образ: $generatedTitle ($mood)."
             isSameArtist && streak == 2 ->
-                "✦ Вы углубляетесь в звучание «$artist» (2-й трек подряд). ${cluster.poeticNuance}"
+                "Вы остаётесь на волне «$artist» (2-й трек подряд). Образ «$generatedTitle» раскрывает новые грани кластера."
             isSameArtist && streak >= 3 ->
-                "✦ Устойчивый резонанс на волне «$artist» ($streak-я композиция). Ваша аура «$mood» сейчас максимально заметна на радаре."
+                "Глубокое погружение в «$artist» ($streak-я композиция подряд). Ваша музыкальная фаза стабильна («$mood»)."
             else ->
-                "✦ Плавный переход от «$previousArtist» к «$artist»: вектор сместился в «$mood». ${cluster.poeticNuance}"
+                "Смена волны с «$previousArtist» на «$artist»: звучание развернулось в сторону «$mood». Сформирован уникальный образ."
         }
 
         return CuratedPersona(
@@ -848,18 +767,46 @@ object EchoStateRepository {
             observation = observation,
             colorHex = selectedColor,
             petals = petals,
-            vibeVector = combinedHash % 100,
-            energyPercent = energy,
-            duskPercent = dusk,
-            warmthPercent = warmth
+            vibeVector = combinedHash % 100
         )
+    }
+
+    private fun detectMoodOrFallback(artistNorm: String, titleNorm: String, hash: Int): String {
+        val text = " $artistNorm $titleNorm "
+        return when {
+            text.contains("blackmore") || text.contains("renaissance") || text.contains("faun") ||
+                text.contains("мельница") || text.contains("medieval") || text.contains("celtic") ->
+                "Ренессанс-фолк и лунная баллада"
+            text.contains("wardruna") || text.contains("agalloch") || text.contains("heilung") ||
+                text.contains("фолк") || text.contains("eolya") || text.contains("barsm") ->
+                "Северный ритуал и древний лес"
+            text.contains("slowdive") || text.contains("cocteau") || text.contains("mazzy") ||
+                text.contains("cigarettes after") || text.contains("shoegaze") ->
+                "Шугейз и туманный дрим-поп"
+            text.contains("кино") || text.contains("молчат") || text.contains("cure") ||
+                text.contains("дурной") || text.contains("post-punk") ->
+                "Холодный пост-панк и неон"
+            text.contains("burial") || text.contains("massive") || text.contains("portishead") ||
+                text.contains("tricky") ->
+                "Ночной трип-хоп и винил"
+            text.contains("aphex") || text.contains("ambient") || text.contains("eno") ||
+                text.contains("coil") || text.contains("drone") ->
+                "Глубокий эмбиент-эфир"
+            text.contains("metallica") || text.contains("doom") || text.contains("black metal") ||
+                text.contains("slayer") || text.contains("megadeth") ->
+                "Тяжёлый штормовой рифф"
+            text.contains("radiohead") || text.contains("muse") || text.contains("placebo") ||
+                text.contains("interpol") ->
+                "Тёплая гитарная меланхолия"
+            else -> moodLabels[hash % moodLabels.size]
+        }
     }
 
     private fun recalculateNearbyCompatibility(myVibeVector: Int) {
         _nearbySignals.value = _nearbySignals.value.mapIndexed { idx, sig ->
             val targetVector = ((idx + 1) * 23) % 100
             val diff = abs(myVibeVector - targetVector)
-            val newCompat = (98 - (diff / 3)).coerceIn(74, 99)
+            val newCompat = (98 - (diff / 3)).coerceIn(72, 99)
             sig.copy(compatibilityPercent = newCompat)
         }
     }
@@ -877,8 +824,8 @@ object EchoStateRepository {
             p.contains("youtube") || p.contains("vanced") -> "YouTube Music"
             p.contains("chrome") || p.contains("browser") -> "Веб-плеер"
             p == "manual" -> "Ручной сигнал"
-            p == "simulator" -> "Тест-волна ЭХО"
-            else -> "Плеер ($pkg)"
+            p == "simulator" -> "Тест-сигнал ЭХО"
+            else -> "Системный плеер ($pkg)"
         }
     }
 }
