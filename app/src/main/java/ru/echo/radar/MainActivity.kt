@@ -586,7 +586,6 @@ fun EchoRadarApp() {
         }
     }
 
-    // ВИНИЛОВАЯ КАРТОЧКА-ПАСПОРТ СЛУШАТЕЛЯ С АНИМИРОВАННЫМИ МИКРО-ИНТЕРАКЦИЯМИ
     if (activeProfileSignal != null) {
         val isSaved = savedTracks.any {
             it.artist.equals(activeProfileSignal.artist, ignoreCase = true) &&
@@ -594,7 +593,6 @@ fun EchoRadarApp() {
         }
         val nodeColor = Color(activeProfileSignal.colorHex)
 
-        // Анимация мягкого мерцания активной ауры
         val infiniteTransition = rememberInfiniteTransition(label = "card_glow")
         val glowAlpha by infiniteTransition.animateFloat(
             initialValue = 0.22f,
