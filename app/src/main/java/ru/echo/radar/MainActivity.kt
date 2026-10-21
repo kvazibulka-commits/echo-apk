@@ -143,6 +143,7 @@ fun EchoMainScreen() {
     val presenceEnabled by EchoStateRepository.presenceEnabled.collectAsState()
     val myTrack by EchoStateRepository.myCurrentTrack.collectAsState()
     val nearbySignals by EchoStateRepository.nearbySignals.collectAsState()
+    val nearbyCapsules by EchoStateRepository.nearbyCapsules.collectAsState()
     val listenerConnected by EchoStateRepository.listenerConnected.collectAsState()
     val savedTracks by EchoStateRepository.savedTracks.collectAsState()
     val incomingBanner by EchoStateRepository.incomingBanner.collectAsState()
@@ -153,12 +154,14 @@ fun EchoMainScreen() {
     var hasOsAccess by remember { mutableStateOf(checkNotificationPermission(context)) }
     var currentTab by remember { mutableIntStateOf(0) }
     var selectedSignalId by remember { mutableStateOf<String?>(null) }
+    var selectedCapsuleId by remember { mutableStateOf<String?>(null) }
+    var isDropCapsuleOpen by remember { mutableStateOf(false) }
     var isSettingsOpen by remember { mutableStateOf(false) }
 
     val activeSignal = nearbySignals.find { it.id == selectedSignalId }
+    val activeCapsule = nearbyCapsules.find { it.id == selectedCapsuleId }
     val isPcLinked = myTrack.sourceName.contains("Эфир ПК")
 
-    // Автоматическая подстановка вашего IP при первом старте, если еще не сохранен
     LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("echo_radar_local_store", Context.MODE_PRIVATE)
         val savedIp = prefs.getString("saved_custom_host", null)
@@ -184,8 +187,8 @@ fun EchoMainScreen() {
         listOf(
             Triple("Яндекс Музыка", "Кино", "Спокойная ночь"),
             Triple("VK Музыка", "Wardruna", "Helvegen"),
-            Triple("Poweramp", "Burial", "Archangel"),
-            Triple("Звук", "Radiohead", "Weird Fishes")
+            Triple("Poweramp", "Slowdive", "Alison"),
+            Triple("Звук", "Dead Can Dance", "Anabasis")
         )
     }
     var demoIndex by remember { mutableIntStateOf(0) }
@@ -200,7 +203,6 @@ fun EchoMainScreen() {
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
-            // ВЕРХНЯЯ ПАНЕЛЬ
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -266,7 +268,6 @@ fun EchoMainScreen() {
                 }
             }
 
-            // ВСПЛЫВАЮЩИЙ БАННЕР ОТКЛИКА
             incomingBanner?.let { banner ->
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(
@@ -292,7 +293,6 @@ fun EchoMainScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // КАРТОЧКА ВАШЕЙ ТЕКУЩЕЙ ВОЛНЫ (С ОТОБРАЖЕНИЕМ СТАТУСА «Эфир ПК ●»)
             val myAuraColor = Color(myTrack.colorHex)
             Row(
                 modifier = Modifier
@@ -330,7 +330,6 @@ fun EchoMainScreen() {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    // Строка статуса подключения к ПК
                     Text(
                         text = myTrack.sourceName,
                         color = if (isPcLinked) Color(0xFF34D399) else Color(0xFF64748B),
@@ -350,7 +349,6 @@ fun EchoMainScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // ПЕРЕКЛЮЧАТЕЛЬ ВКЛАДОК
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -385,7 +383,6 @@ fun EchoMainScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // СОДЕРЖИМОЕ ВКЛАДОК
             when (currentTab) {
                 0 -> {
                     Column(
@@ -399,20 +396,119 @@ fun EchoMainScreen() {
                     ) {
                         LiveSonarCanvas(
                             signals = nearbySignals,
+                            capsules = nearbyCapsules,
                             selectedSignalId = selectedSignalId ?: "",
+                            selectedCapsuleId = selectedCapsuleId ?: "",
                             myColor = myAuraColor,
-                            onSelectSignal = { selectedSignalId = it.id }
+                            onSelectSignal = {
+                                selectedCapsuleId = null
+                                selectedSignalId = it.id
+                            },
+                            onSelectCapsule = {
+                                selectedSignalId = null
+                                selectedCapsuleId = it.id
+                            }
                         )
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(Color(0xFFD97706).copy(alpha = 0.25f), Color(0xFF1E293B))
+                                    )
+                                )
+                                .border(1.dp, Color(0xFFFBBF24).copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .clickable { isDropCapsuleOpen = true }
+                                .padding(vertical = 9.dp, horizontal = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "◆ Спрятать музыкальный тайник в «$myCurrentZone»",
+                                color = Color(0xFFFDE68A),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        if (nearbyCapsules.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "◆ МУЗЫКАЛЬНЫЕ ТАЙНИКИ В ЭФИРЕ (открываются при резонансе ≥ 85%):",
+                                color = Color(0xFFFBBF24),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(7.dp)
+                            ) {
+                                nearbyCapsules.forEach { cap ->
+                                    val goldColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(
+                                                Brush.horizontalGradient(
+                                                    colors = listOf(goldColor.copy(alpha = 0.14f), Color(0xFF111827))
+                                                )
+                                            )
+                                            .border(1.dp, goldColor.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                                            .clickable {
+                                                selectedSignalId = null
+                                                selectedCapsuleId = cap.id
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "◆ ${cap.artist} — ${cap.title}",
+                                                color = Color(0xFFFDE68A),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = if (cap.isUnlocked)
+                                                    "🔓 Открыт (${cap.compatibilityPercent}% рез.) · 📍 ${cap.zoneName}"
+                                                else
+                                                    "🔒 Запечатан (${cap.compatibilityPercent}% / нужно 85%+) · 📍 ${cap.zoneName}",
+                                                color = goldColor,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Text(
+                                            text = "~${cap.distanceMeters} м",
+                                            color = goldColor,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         Text(
-                            text = "Нажмите на сигнал на сонаре или в списке, чтобы открыть паспорт волны:",
+                            text = "Слушатели вокруг вас (нажмите, чтобы открыть паспорт волны):",
                             color = Color(0xFF64748B),
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            modifier = Modifier.fillMaxWidth()
                         )
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         Column(
                             modifier = Modifier.fillMaxWidth(),
@@ -430,7 +526,10 @@ fun EchoMainScreen() {
                                             )
                                         )
                                         .border(1.dp, sigColor.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
-                                        .clickable { selectedSignalId = sig.id }
+                                        .clickable {
+                                            selectedCapsuleId = null
+                                            selectedSignalId = sig.id
+                                        }
                                         .padding(horizontal = 14.dp, vertical = 11.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
@@ -650,7 +749,218 @@ fun EchoMainScreen() {
         }
     }
 
-    // МОДАЛЬНОЕ ОКНО: ВИНИЛОВАЯ КАРТОЧКА-ПАСПОРТ + АНИМАЦИЯ ИСКРЫ ОТКЛИКА
+    // МОДАЛЬНОЕ ОКНО: МУЗЫКАЛЬНЫЙ ТАЙНИК (КАПСУЛА ВРЕМЕНИ)
+    if (activeCapsule != null) {
+        val goldAccent = if (activeCapsule.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
+        val isCapTrackSaved = savedTracks.any {
+            it.artist.equals(activeCapsule.artist, ignoreCase = true) &&
+                it.title.equals(activeCapsule.title, ignoreCase = true)
+        }
+
+        AlertDialog(
+            onDismissRequest = { selectedCapsuleId = null },
+            containerColor = Color(0xFF080D1A),
+            titleContentColor = Color.White,
+            textContentColor = Color(0xFFCBD5E1),
+            shape = RoundedCornerShape(22.dp),
+            title = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(goldAccent.copy(alpha = 0.28f), Color(0xFF111827))
+                            )
+                        )
+                        .border(1.dp, goldAccent.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "◆ Тайник: ${activeCapsule.personaTitle}",
+                            color = Color(0xFFFDE68A),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "📍 ${activeCapsule.zoneName} · Ваш резонанс: ${activeCapsule.compatibilityPercent}% (~${activeCapsule.distanceMeters} м)",
+                            color = goldAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF111827))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = "♫ ${activeCapsule.artist} — ${activeCapsule.title}",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Эстетический кластер: ${activeCapsule.moodLabel}",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (activeCapsule.isUnlocked) Color(0xFF1E1B18) else Color(0xFF131B2E))
+                            .border(
+                                1.dp,
+                                if (activeCapsule.isUnlocked) Color(0xFFFBBF24).copy(alpha = 0.5f) else Color(0xFF334155),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Text(
+                                text = if (activeCapsule.isUnlocked)
+                                    "🔓 КАПСУЛА РАСШИФРОВАНА (частоты совпали):"
+                                else
+                                    "🔒 КАПСУЛА ЗАПЕЧАТАНА (требуется резонанс ≥ 85%):",
+                                color = goldAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(5.dp))
+                            Text(
+                                text = if (activeCapsule.isUnlocked)
+                                    "«${activeCapsule.secretMessage}»"
+                                else
+                                    "Настройте свой плеер на близкую эстетическую волну («${activeCapsule.moodLabel}»), чтобы ключ резонанса открыл послание автора.",
+                                color = Color.White,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                launchPlayerSearch(context, activeCapsule.artist, activeCapsule.title)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                        ) {
+                            Text("♫ Слушать", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                EchoStateRepository.saveTrackToFinds(
+                                    EchoTrackSignal(
+                                        id = activeCapsule.id,
+                                        artist = activeCapsule.artist,
+                                        title = activeCapsule.title,
+                                        sourceName = "Тайник · ${activeCapsule.zoneName}",
+                                        distanceMeters = activeCapsule.distanceMeters,
+                                        angleDegrees = activeCapsule.angleDegrees,
+                                        distanceRatio = activeCapsule.distanceRatio,
+                                        personaTitle = activeCapsule.personaTitle,
+                                        personaObservation = activeCapsule.secretMessage,
+                                        moodLabel = activeCapsule.moodLabel,
+                                        compatibilityPercent = activeCapsule.compatibilityPercent,
+                                        resonanceDays = 1,
+                                        encountersCount = 1,
+                                        colorHex = 0xFFFBBF24L,
+                                        avatarPetals = 6,
+                                        reactions = emptyMap()
+                                    )
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            border = BorderStroke(1.dp, if (isCapTrackSaved) Color(0xFF34D399) else Color(0xFFFBBF24))
+                        ) {
+                            Text(
+                                text = if (isCapTrackSaved) "✓ В находках" else "★ В находки",
+                                color = if (isCapTrackSaved) Color(0xFF34D399) else Color(0xFFFDE68A),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { selectedCapsuleId = null }) {
+                    Text("Закрыть", color = Color(0xFF94A3B8))
+                }
+            }
+        )
+    }
+
+    // МОДАЛЬНОЕ ОКНО: СОЗДАНИЕ НОВОГО ТАЙНИКА В ТЕКУЩЕЙ ЗОНЕ
+    if (isDropCapsuleOpen) {
+        var secretInput by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { isDropCapsuleOpen = false },
+            containerColor = Color(0xFF0F172A),
+            titleContentColor = Color(0xFFFDE68A),
+            textContentColor = Color(0xFFCBD5E1),
+            shape = RoundedCornerShape(22.dp),
+            title = { Text("◆ Спрятать музыкальный тайник") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Ваша текущая песня «${myTrack.artist} — ${myTrack.title}» будет запечатана в гео-зоне «$myCurrentZone».",
+                        color = Color.White,
+                        fontSize = 12.sp
+                    )
+                    Text(
+                        text = "Прочитать ваше послание смогут только те слушатели рядом, чей музыкальный резонанс с вами достигнет 85%+.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 11.sp
+                    )
+                    OutlinedTextField(
+                        value = secretInput,
+                        onValueChange = { if (it.length <= 140) secretInput = it },
+                        label = { Text("Тайное послание или промокод (до 140 симв.)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (secretInput.isNotBlank()) {
+                            EchoStateRepository.dropTimeCapsule(secretInput)
+                            Toast.makeText(context, "◆ Тайник запечатан в эфире!", Toast.LENGTH_SHORT).show()
+                            isDropCapsuleOpen = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                ) {
+                    Text("Запечатать капсулу")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { isDropCapsuleOpen = false }) {
+                    Text("Отмена", color = Color(0xFF94A3B8))
+                }
+            }
+        )
+    }
+
+    // МОДАЛЬНОЕ ОКНО: ВИНИЛОВАЯ КАРТОЧКА-ПАСПОРТ СЛУШАТЕЛЯ
     if (activeSignal != null) {
         val isTrackSaved = savedTracks.any {
             it.artist.equals(activeSignal.artist, ignoreCase = true) &&
@@ -944,7 +1254,6 @@ fun EchoMainScreen() {
                     OutlinedTextField(
                         value = ipInput,
                         onValueChange = { newValue ->
-                            // Защита от случайной вставки огромного куска текста из буфера обмена
                             if (newValue.length <= 45) {
                                 ipInput = newValue
                             }
@@ -981,9 +1290,12 @@ fun EchoMainScreen() {
 @Composable
 fun LiveSonarCanvas(
     signals: List<EchoTrackSignal>,
+    capsules: List<EchoTimeCapsule>,
     selectedSignalId: String,
+    selectedCapsuleId: String,
     myColor: Color,
-    onSelectSignal: (EchoTrackSignal) -> Unit
+    onSelectSignal: (EchoTrackSignal) -> Unit,
+    onSelectCapsule: (EchoTimeCapsule) -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "sonar_anim")
     val radarAngle by infiniteTransition.animateFloat(
@@ -1023,21 +1335,42 @@ fun LiveSonarCanvas(
         Canvas(
             modifier = Modifier
                 .size(250.dp)
-                .pointerInput(signals) {
+                .pointerInput(signals, capsules) {
                     detectTapGestures { offset ->
                         val cx = size.width / 2f
                         val cy = size.height / 2f
                         val maxR = (size.width.coerceAtMost(size.height) / 2f) * 0.88f
 
-                        val closest = signals.minByOrNull { sig ->
+                        val closestSig = signals.minByOrNull { sig ->
                             val rad = sig.angleDegrees * (PI.toFloat() / 180f)
                             val r = maxR * sig.distanceRatio
                             val sx = cx + r * cos(rad)
                             val sy = cy + r * sin(rad)
                             hypot(offset.x - sx, offset.y - sy)
                         }
-                        if (closest != null) {
-                            onSelectSignal(closest)
+                        val sigDist = closestSig?.let { sig ->
+                            val rad = sig.angleDegrees * (PI.toFloat() / 180f)
+                            val r = maxR * sig.distanceRatio
+                            hypot(offset.x - (cx + r * cos(rad)), offset.y - (cy + r * sin(rad)))
+                        } ?: Float.MAX_VALUE
+
+                        val closestCap = capsules.minByOrNull { cap ->
+                            val rad = cap.angleDegrees * (PI.toFloat() / 180f)
+                            val r = maxR * cap.distanceRatio
+                            val sx = cx + r * cos(rad)
+                            val sy = cy + r * sin(rad)
+                            hypot(offset.x - sx, offset.y - sy)
+                        }
+                        val capDist = closestCap?.let { cap ->
+                            val rad = cap.angleDegrees * (PI.toFloat() / 180f)
+                            val r = maxR * cap.distanceRatio
+                            hypot(offset.x - (cx + r * cos(rad)), offset.y - (cy + r * sin(rad)))
+                        } ?: Float.MAX_VALUE
+
+                        if (capDist < sigDist && capDist < 42f && closestCap != null) {
+                            onSelectCapsule(closestCap)
+                        } else if (closestSig != null && sigDist < 48f) {
+                            onSelectSignal(closestSig)
                         }
                     }
                 }
@@ -1056,7 +1389,6 @@ fun LiveSonarCanvas(
                 center = Offset(cx, cy)
             )
 
-            // Расходящаяся звуковая волна эхолота
             drawCircle(
                 color = myColor.copy(alpha = (1f - sonarWave) * 0.35f),
                 radius = maxR * sonarWave,
@@ -1097,6 +1429,36 @@ fun LiveSonarCanvas(
                 style = Stroke(width = 1.2f)
             )
 
+            // Отрисовка золотых кристаллов-тайников (Капсул времени)
+            capsules.forEach { cap ->
+                val rad = cap.angleDegrees * (PI.toFloat() / 180f)
+                val r = maxR * cap.distanceRatio
+                val sx = cx + r * cos(rad)
+                val sy = cy + r * sin(rad)
+                val isSelected = cap.id == selectedCapsuleId
+                val capColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
+
+                drawCircle(
+                    color = capColor.copy(alpha = 0.25f),
+                    radius = if (isSelected) 18f * nodePulse else 12f,
+                    center = Offset(sx, sy)
+                )
+
+                val diamond = Path().apply {
+                    val d = if (isSelected) 8.5f else 6.5f
+                    moveTo(sx, sy - d)
+                    lineTo(sx + d, sy)
+                    lineTo(sx, sy + d)
+                    lineTo(sx - d, sy)
+                    close()
+                }
+                drawPath(
+                    path = diamond,
+                    color = if (isSelected) Color.White else capColor
+                )
+            }
+
+            // Отрисовка сигналов слушателей
             signals.forEach { sig ->
                 val rad = sig.angleDegrees * (PI.toFloat() / 180f)
                 val r = maxR * sig.distanceRatio
