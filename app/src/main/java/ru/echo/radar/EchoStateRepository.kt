@@ -74,6 +74,7 @@ object EchoStateRepository {
     private const val PREFS_NAME = "echo_radar_local_store"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_SAVED_TRACKS = "saved_tracks_json"
+    private const val KEY_CUSTOM_HOST = "saved_custom_host"
 
     private var myDeviceId = "echo_android_" + UUID.randomUUID().toString().take(6)
     private var appContext: Context? = null
@@ -282,7 +283,7 @@ object EchoStateRepository {
                         val discoveredIp = packet.address.hostAddress
                         if (!discoveredIp.isNullOrEmpty()) {
                             val targetHost = "$discoveredIp:$serverPort"
-                            if (customServerHost != targetHost) {
+                            if (customServerHost != targetHost && appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.getString(KEY_CUSTOM_HOST, null).isNullOrEmpty()) {
                                 customServerHost = targetHost
                                 serverOnline = true
                             }
@@ -319,6 +320,12 @@ object EchoStateRepository {
             _myCurrentTrack.value = _myCurrentTrack.value.copy(id = myDeviceId)
         } else {
             prefs.edit().putString(KEY_DEVICE_ID, myDeviceId).apply()
+        }
+
+        // Подгружаем сохраненный IP адрес ПК, если он задавался вручную
+        val savedHost = prefs.getString(KEY_CUSTOM_HOST, null)
+        if (!savedHost.isNullOrEmpty()) {
+            customServerHost = savedHost
         }
 
         val rawJson = prefs.getString(KEY_SAVED_TRACKS, "[]") ?: "[]"
@@ -417,6 +424,11 @@ object EchoStateRepository {
         if (cleanArtist.matches(Regex("""^(ip:)?\d{1,3}(\.\d{1,3}){3}(:\d+)?$""", RegexOption.IGNORE_CASE))) {
             val rawHost = cleanArtist.removePrefix("ip:").removePrefix("IP:")
             customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
+            
+            // Сохраняем введенный IP в постоянную память, чтобы он не сбрасывался
+            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
+
             thread(isDaemon = true) { syncWithLocalServer() }
             return
         }
