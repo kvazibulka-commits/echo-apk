@@ -39,6 +39,22 @@ data class EchoTrackSignal(
     val reactions: Map<String, Int>
 )
 
+data class EchoTimeCapsule(
+    val id: String,
+    val creatorId: String,
+    val artist: String,
+    val title: String,
+    val moodLabel: String,
+    val personaTitle: String,
+    val zoneName: String,
+    val secretMessage: String,
+    val distanceMeters: Int,
+    val angleDegrees: Float,
+    val distanceRatio: Float,
+    val compatibilityPercent: Int,
+    val isUnlocked: Boolean
+)
+
 data class SavedEchoTrack(
     val artist: String,
     val title: String,
@@ -125,6 +141,42 @@ object EchoStateRepository {
     val liveCityZones: StateFlow<List<CityZoneTrace>> = _liveCityZones.asStateFlow()
     val cityZones: List<CityZoneTrace> get() = _liveCityZones.value
 
+    private val _nearbyCapsules = MutableStateFlow(
+        listOf(
+            EchoTimeCapsule(
+                id = "cap_1",
+                creatorId = "bot_2",
+                artist = "Dead Can Dance",
+                title = "Host of Seraphim",
+                moodLabel = "Сумеречный неофолк и легенды",
+                personaTitle = "Летописец курганных преданий",
+                zoneName = "Парк Горького · Набережная",
+                secretMessage = "Слушаю этот трек у воды, пока зажигаются огни на мосту. Если наш резонанс совпал — значит, ты тоже слышишь тишину между нотами.",
+                distanceMeters = 60,
+                angleDegrees = 88f,
+                distanceRatio = 0.46f,
+                compatibilityPercent = 89,
+                isUnlocked = true
+            ),
+            EchoTimeCapsule(
+                id = "cap_2",
+                creatorId = "bot_1",
+                artist = "Slowdive",
+                title = "Star Roving",
+                moodLabel = "Шугейз и туманный дрим-поп",
+                personaTitle = "Киномеханик дождливых крыш",
+                zoneName = "Покровка · Ночные кофейни",
+                secretMessage = "Тайник для ценителей гитарного тумана. Секретный пароль на фильтр-кофе в ночной кофейне у арки: ЭХО-ПОКРОВКА.",
+                distanceMeters = 115,
+                angleDegrees = 305f,
+                distanceRatio = 0.58f,
+                compatibilityPercent = 82,
+                isUnlocked = false
+            )
+        )
+    )
+    val nearbyCapsules: StateFlow<List<EchoTimeCapsule>> = _nearbyCapsules.asStateFlow()
+
     fun setMyZone(zone: String) {
         _myCurrentZone.value = zone
         thread(isDaemon = true) { syncWithLocalServer() }
@@ -138,6 +190,35 @@ object EchoStateRepository {
             ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
 
         thread(isDaemon = true) { syncWithLocalServer() }
+    }
+
+    fun dropTimeCapsule(secretMessage: String) {
+        val cleanMsg = secretMessage.trim().take(140)
+        if (cleanMsg.isEmpty()) return
+
+        val myTrack = _myCurrentTrack.value
+        val zone = _myCurrentZone.value
+        val newCap = EchoTimeCapsule(
+            id = "cap_local_${System.currentTimeMillis() % 100000}",
+            creatorId = myDeviceId,
+            artist = myTrack.artist,
+            title = myTrack.title,
+            moodLabel = myTrack.moodLabel,
+            personaTitle = myTrack.personaTitle,
+            zoneName = zone,
+            secretMessage = cleanMsg,
+            distanceMeters = 15,
+            angleDegrees = ((_nearbyCapsules.value.size + 1) * 115f) % 360f,
+            distanceRatio = 0.28f,
+            compatibilityPercent = 100,
+            isUnlocked = true
+        )
+        _nearbyCapsules.value = listOf(newCap) + _nearbyCapsules.value
+
+        thread(isDaemon = true) {
+            postCapsuleToServer(newCap)
+            syncWithLocalServer()
+        }
     }
 
     private val _eveningTraces = MutableStateFlow(
@@ -616,6 +697,32 @@ object EchoStateRepository {
             _nearbySignals.value = list
         }
 
+        val capsArr = json.optJSONArray("capsules")
+        if (capsArr != null && capsArr.length() > 0) {
+            val parsedCaps = mutableListOf<EchoTimeCapsule>()
+            for (i in 0 until capsArr.length()) {
+                val c = capsArr.getJSONObject(i)
+                parsedCaps.add(
+                    EchoTimeCapsule(
+                        id = c.optString("id", "cap_$i"),
+                        creatorId = c.optString("creatorId", ""),
+                        artist = c.optString("artist", "Неизвестный"),
+                        title = c.optString("title", "Без названия"),
+                        moodLabel = c.optString("moodLabel", "Ночное созерцание"),
+                        personaTitle = c.optString("personaTitle", "Странник эфира"),
+                        zoneName = c.optString("zoneName", "Вечерняя улица"),
+                        secretMessage = c.optString("secretMessage", ""),
+                        distanceMeters = c.optInt("distanceMeters", 60),
+                        angleDegrees = c.optDouble("angleDegrees", 90.0).toFloat(),
+                        distanceRatio = c.optDouble("distanceRatio", 0.45).toFloat(),
+                        compatibilityPercent = c.optInt("compatibilityPercent", 85),
+                        isUnlocked = c.optBoolean("isUnlocked", false)
+                    )
+                )
+            }
+            _nearbyCapsules.value = parsedCaps
+        }
+
         val tracesArr = json.optJSONArray("eveningTraces")
         if (tracesArr != null && tracesArr.length() > 0) {
             val traces = mutableListOf<String>()
@@ -640,6 +747,39 @@ object EchoStateRepository {
                 )
             }
             _liveCityZones.value = parsedZones
+        }
+    }
+
+    private fun postCapsuleToServer(capsule: EchoTimeCapsule) {
+        val candidates = mutableListOf<String>()
+        customServerHost?.let { candidates.add(it) }
+        candidates.add("10.0.2.2:8080")
+        candidates.add("127.0.0.1:8080")
+
+        val body = JSONObject().apply {
+            put("creatorId", capsule.creatorId)
+            put("artist", capsule.artist)
+            put("title", capsule.title)
+            put("moodLabel", capsule.moodLabel)
+            put("personaTitle", capsule.personaTitle)
+            put("zoneName", capsule.zoneName)
+            put("secretMessage", capsule.secretMessage)
+        }.toString()
+
+        for (host in candidates) {
+            try {
+                val url = URL("http://$host/api/drop_capsule")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1500
+                    readTimeout = 1500
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
+                if (conn.responseCode == 200) return
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -702,7 +842,6 @@ object EchoStateRepository {
         val clusterKey = resolveClusterKey(mood)
         val lexicon = clusterLexicons[clusterKey] ?: clusterLexicons.getValue("general")
 
-        // Собираем слова, которые уже заняты активными сигналами на радаре и недавними треками
         val forbiddenWords = mutableSetOf<String>()
         forbiddenWords.addAll(recentUsedWords)
         _nearbySignals.value.forEach { sig ->
