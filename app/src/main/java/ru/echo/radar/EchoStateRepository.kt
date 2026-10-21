@@ -9,6 +9,8 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -264,6 +266,34 @@ object EchoStateRepository {
     val nearbySignals: StateFlow<List<EchoTrackSignal>> = _nearbySignals.asStateFlow()
 
     init {
+        // 1. Автопоиск сервера в локальной сети (UDP-бродкаст на порту 8888)
+        thread(isDaemon = true, name = "EchoUdpDiscovery") {
+            try {
+                val socket = DatagramSocket(8888).apply {
+                    broadcast = true
+                }
+                val buffer = ByteArray(256)
+                while (true) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket.receive(packet)
+                    val message = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                    if (message.startsWith("ECHO_SERVER_DISCOVERY:")) {
+                        val serverPort = message.substringAfter(":").trim()
+                        val discoveredIp = packet.address.hostAddress
+                        if (!discoveredIp.isNullOrEmpty()) {
+                            val targetHost = "$discoveredIp:$serverPort"
+                            if (customServerHost != targetHost) {
+                                customServerHost = targetHost
+                                serverOnline = true
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // 2. Фоновый поток синхронизации с сервером каждые 2.5 секунды
         thread(isDaemon = true, name = "EchoServerSync") {
             while (true) {
                 try {
