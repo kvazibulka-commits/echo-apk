@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -82,8 +83,14 @@ object EchoStateRepository {
     @Volatile
     private var customServerHost: String? = null
 
-    @Volatile
-    private var serverOnline: Boolean = false
+    private val _savedServerHost = MutableStateFlow("192.168.0.214:8080")
+    val savedServerHost: StateFlow<String> = _savedServerHost.asStateFlow()
+
+    private val _serverOnline = MutableStateFlow(false)
+    val serverOnline: StateFlow<Boolean> = _serverOnline.asStateFlow()
+
+    private val _connectedHost = MutableStateFlow("")
+    val connectedHost: StateFlow<String> = _connectedHost.asStateFlow()
 
     private val _presenceEnabled = MutableStateFlow(true)
     val presenceEnabled: StateFlow<Boolean> = _presenceEnabled.asStateFlow()
@@ -125,11 +132,20 @@ object EchoStateRepository {
     }
 
     fun setCustomServerIp(ipAddress: String) {
-        val rawHost = ipAddress.removePrefix("ip:").removePrefix("IP:").trim()
-        customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
-        
+        val cleaned = ipAddress
+            .removePrefix("http://")
+            .removePrefix("https://")
+            .removePrefix("ip:")
+            .removePrefix("IP:")
+            .trim()
+        if (cleaned.isEmpty()) return
+
+        val finalHost = if (cleaned.contains(":")) cleaned else "$cleaned:8080"
+        customServerHost = finalHost
+        _savedServerHost.value = finalHost
+
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
+            ?.edit()?.putString(KEY_CUSTOM_HOST, finalHost)?.apply()
 
         thread(isDaemon = true) { syncWithLocalServer() }
     }
@@ -277,11 +293,12 @@ object EchoStateRepository {
     val nearbySignals: StateFlow<List<EchoTrackSignal>> = _nearbySignals.asStateFlow()
 
     init {
-        // 1. Автопоиск сервера в локальной сети (UDP-бродкаст на порту 8888)
         thread(isDaemon = true, name = "EchoUdpDiscovery") {
             try {
-                val socket = DatagramSocket(8888).apply {
+                val socket = DatagramSocket(null).apply {
+                    reuseAddress = true
                     broadcast = true
+                    bind(InetSocketAddress(8888))
                 }
                 val buffer = ByteArray(256)
                 while (true) {
@@ -291,11 +308,11 @@ object EchoStateRepository {
                     if (message.startsWith("ECHO_SERVER_DISCOVERY:")) {
                         val serverPort = message.substringAfter(":").trim()
                         val discoveredIp = packet.address.hostAddress
-                        if (!discoveredIp.isNullOrEmpty()) {
+                        if (!discoveredIp.isNullOrEmpty() && !discoveredIp.startsWith("127.")) {
                             val targetHost = "$discoveredIp:$serverPort"
-                            if (customServerHost != targetHost && appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.getString(KEY_CUSTOM_HOST, null).isNullOrEmpty()) {
+                            if (customServerHost.isNullOrEmpty()) {
                                 customServerHost = targetHost
-                                serverOnline = true
+                                _savedServerHost.value = targetHost
                             }
                         }
                     }
@@ -304,7 +321,6 @@ object EchoStateRepository {
             }
         }
 
-        // 2. Фоновый поток синхронизации с сервером каждые 2.5 секунды
         thread(isDaemon = true, name = "EchoServerSync") {
             while (true) {
                 try {
@@ -332,9 +348,10 @@ object EchoStateRepository {
             prefs.edit().putString(KEY_DEVICE_ID, myDeviceId).apply()
         }
 
-        val savedHost = prefs.getString(KEY_CUSTOM_HOST, null)
+        val savedHost = prefs.getString(KEY_CUSTOM_HOST, "192.168.0.214:8080")
         if (!savedHost.isNullOrEmpty()) {
             customServerHost = savedHost
+            _savedServerHost.value = savedHost
         }
 
         val rawJson = prefs.getString(KEY_SAVED_TRACKS, "[]") ?: "[]"
@@ -430,6 +447,19 @@ object EchoStateRepository {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
 
+        // Если в поле случайно вставили IP-адрес или ссылку, сохраняем как IP сервера
+        if (cleanArtist.matches(Regex("""^(https?://)?(ip:)?\d{1,3}(\.\d{1,3}){3}(:\d+)?.*$""", RegexOption.IGNORE_CASE))) {
+            setCustomServerIp(cleanArtist)
+            return
+        }
+
+        // Защита от случайной вставки исходного кода из буфера обмена
+        if (cleanArtist.length > 85 || cleanTitle.length > 110 ||
+            cleanArtist.contains("package ") || cleanArtist.contains("import ")
+        ) {
+            return
+        }
+
         val current = _myCurrentTrack.value
         if (current.artist.equals(cleanArtist, ignoreCase = true) &&
             current.title.equals(cleanTitle, ignoreCase = true)
@@ -452,7 +482,7 @@ object EchoStateRepository {
         }
 
         lastBaseSourceName = mapPackageToName(sourcePackage)
-        val displaySource = if (serverOnline) "$lastBaseSourceName · Эфир ПК ●" else lastBaseSourceName
+        val displaySource = if (_serverOnline.value) "$lastBaseSourceName · Эфир ПК ●" else lastBaseSourceName
 
         val curated = generateDynamicPersona(
             artist = cleanArtist,
@@ -493,11 +523,17 @@ object EchoStateRepository {
         }
     }
 
+    private fun buildCandidateHosts(): List<String> {
+        val list = mutableListOf<String>()
+        customServerHost?.let { if (it.isNotBlank()) list.add(it) }
+        list.add("10.0.2.2:8080")
+        list.add("192.168.0.214:8080")
+        list.add("127.0.0.1:8080")
+        return list.distinct()
+    }
+
     private fun syncWithLocalServer() {
-        val candidates = mutableListOf<String>()
-        customServerHost?.let { candidates.add(it) }
-        candidates.add("10.0.2.2:8080")
-        candidates.add("127.0.0.1:8080")
+        val candidates = buildCandidateHosts()
 
         val myTrack = _myCurrentTrack.value
         val payload = JSONObject().apply {
@@ -532,14 +568,15 @@ object EchoStateRepository {
                     val responseText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
                         it.readText()
                     }
+                    _serverOnline.value = true
+                    _connectedHost.value = host
                     handleServerResponse(JSONObject(responseText))
-                    serverOnline = true
                     return
                 }
             } catch (_: Exception) {
             }
         }
-        serverOnline = false
+        _serverOnline.value = false
     }
 
     private fun handleServerResponse(json: JSONObject) {
@@ -638,10 +675,7 @@ object EchoStateRepository {
     }
 
     private fun postReactionToServer(targetId: String, symbol: String) {
-        val candidates = mutableListOf<String>()
-        customServerHost?.let { candidates.add(it) }
-        candidates.add("10.0.2.2:8080")
-        candidates.add("127.0.0.1:8080")
+        val candidates = buildCandidateHosts()
 
         val body = JSONObject().apply {
             put("targetId", targetId)
