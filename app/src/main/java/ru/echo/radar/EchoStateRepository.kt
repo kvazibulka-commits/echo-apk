@@ -124,6 +124,16 @@ object EchoStateRepository {
         thread(isDaemon = true) { syncWithLocalServer() }
     }
 
+    fun setCustomServerIp(ipAddress: String) {
+        val rawHost = ipAddress.removePrefix("ip:").removePrefix("IP:").trim()
+        customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
+        
+        appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
+
+        thread(isDaemon = true) { syncWithLocalServer() }
+    }
+
     private val _eveningTraces = MutableStateFlow(
         listOf(
             "21:40 · Рядом прозвучал Coil — The Ape of Naples (~90 м)",
@@ -322,7 +332,6 @@ object EchoStateRepository {
             prefs.edit().putString(KEY_DEVICE_ID, myDeviceId).apply()
         }
 
-        // Подгружаем сохраненный IP адрес ПК, если он задавался вручную
         val savedHost = prefs.getString(KEY_CUSTOM_HOST, null)
         if (!savedHost.isNullOrEmpty()) {
             customServerHost = savedHost
@@ -420,18 +429,6 @@ object EchoStateRepository {
     fun updateMyPlayingTrack(artist: String, title: String, sourcePackage: String) {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный исполнитель" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
-
-        if (cleanArtist.matches(Regex("""^(ip:)?\d{1,3}(\.\d{1,3}){3}(:\d+)?$""", RegexOption.IGNORE_CASE))) {
-            val rawHost = cleanArtist.removePrefix("ip:").removePrefix("IP:")
-            customServerHost = if (rawHost.contains(":")) rawHost else "$rawHost:8080"
-            
-            // Сохраняем введенный IP в постоянную память, чтобы он не сбрасывался
-            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                ?.edit()?.putString(KEY_CUSTOM_HOST, customServerHost)?.apply()
-
-            thread(isDaemon = true) { syncWithLocalServer() }
-            return
-        }
 
         val current = _myCurrentTrack.value
         if (current.artist.equals(cleanArtist, ignoreCase = true) &&
