@@ -508,7 +508,7 @@ fun EchoRadarApp() {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = "♫ ${item.artist} — ${item.title}",
-                                            color = Color.White,
+                                            color = Color(0xFFF1F5F9),
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -586,64 +586,114 @@ fun EchoRadarApp() {
         }
     }
 
+    // ВИНИЛОВАЯ КАРТОЧКА-ПАСПОРТ СЛУШАТЕЛЯ С АНИМИРОВАННЫМИ МИКРО-ИНТЕРАКЦИЯМИ
     if (activeProfileSignal != null) {
         val isSaved = savedTracks.any {
             it.artist.equals(activeProfileSignal.artist, ignoreCase = true) &&
                 it.title.equals(activeProfileSignal.title, ignoreCase = true)
         }
+        val nodeColor = Color(activeProfileSignal.colorHex)
+
+        // Анимация мягкого мерцания активной ауры
+        val infiniteTransition = rememberInfiniteTransition(label = "card_glow")
+        val glowAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.22f,
+            targetValue = 0.45f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1800, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "glow_alpha"
+        )
 
         AlertDialog(
             onDismissRequest = { activeProfileId = null },
-            containerColor = Color(0xFF0F172A),
+            containerColor = Color(0xFF090E17),
             titleContentColor = Color.White,
             textContentColor = Color(0xFFCBD5E1),
+            shape = RoundedCornerShape(22.dp),
             title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    GenerativeAvatarCanvas(
-                        color = Color(activeProfileSignal.colorHex),
-                        petals = activeProfileSignal.avatarPetals,
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(text = activeProfileSignal.personaTitle, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            text = "Совместимость: ${activeProfileSignal.compatibilityPercent}% · ~${activeProfileSignal.distanceMeters} м",
-                            color = Color(0xFF38BDF8),
-                            fontSize = 12.sp
-                        )
+                Column {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(nodeColor.copy(alpha = glowAlpha), Color(0xFF111827))
+                                )
+                            )
+                            .border(1.dp, nodeColor.copy(alpha = 0.6f), RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            GenerativeAvatarCanvas(
+                                color = nodeColor,
+                                petals = activeProfileSignal.avatarPetals,
+                                modifier = Modifier.size(46.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = activeProfileSignal.personaTitle,
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Совместимость: ${activeProfileSignal.compatibilityPercent}% · ~${activeProfileSignal.distanceMeters} м",
+                                    color = nodeColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "♫ ${activeProfileSignal.artist} — ${activeProfileSignal.title}",
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Настроение: ${activeProfileSignal.moodLabel} (${activeProfileSignal.sourceName})",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 12.sp
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF111827))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = "♫ ${activeProfileSignal.artist} — ${activeProfileSignal.title}",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Настроение: ${activeProfileSignal.moodLabel} (${activeProfileSignal.sourceName})",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp
+                        )
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFF1E1B4B))
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF131B2E))
+                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
                             .padding(10.dp)
                     ) {
                         Text(
-                            text = "✦ Резонанс: ${activeProfileSignal.resonanceDays} дн. · Встреча №${activeProfileSignal.encountersCount}",
+                            text = "✦ Резонанс в истории: ${activeProfileSignal.resonanceDays} дн. · Встреча №${activeProfileSignal.encountersCount}",
                             color = Color(0xFFC4B5FD),
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     }
+
                     Text(
                         text = "«${activeProfileSignal.personaObservation}»",
-                        color = Color(0xFFCBD5E1),
+                        color = Color(0xFF94A3B8),
                         fontSize = 12.sp
                     )
 
@@ -673,6 +723,11 @@ fun EchoRadarApp() {
                         }
                     }
 
+                    Text(
+                        text = "Отправить энергетический отклик (искра в эфир):",
+                        color = Color(0xFF64748B),
+                        fontSize = 11.sp
+                    )
                     val symbols = listOf("🦇", "🌑", "🌊", "⚔", "🌲", "🎼", "☁")
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -683,15 +738,15 @@ fun EchoRadarApp() {
                             Box(
                                 modifier = Modifier
                                     .clip(CircleShape)
-                                    .background(Color(0xFF1E293B))
-                                    .border(1.dp, Color(0xFF334155), CircleShape)
+                                    .background(Color(0xFF111827))
+                                    .border(1.dp, nodeColor.copy(alpha = 0.4f), CircleShape)
                                     .clickable { EchoStateRepository.sendSymbolReaction(activeProfileSignal.id, sym) }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
                                 Text(
                                     text = if (count > 0) "$sym $count" else sym,
                                     color = Color.White,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                             }
                         }
@@ -922,12 +977,12 @@ fun InteractiveRadarField(
                 drawCircle(
                     color = nodeColor.copy(alpha = 0.25f * constrainAlpha),
                     radius = 12f,
-                    center = Offset(cx, sy)
+                    center = Offset(sx, sy)
                 )
                 drawCircle(
                     color = if (isSelected) Color.White else nodeColor.copy(alpha = constrainAlpha),
                     radius = if (isSelected) 8f else 5.5f,
-                    center = Offset(cx, sy)
+                    center = Offset(sx, sy)
                 )
             }
         }
