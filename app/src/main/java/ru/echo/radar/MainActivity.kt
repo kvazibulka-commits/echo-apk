@@ -769,12 +769,14 @@ fun EchoRadarApp() {
                     OutlinedTextField(
                         value = artistInput,
                         onValueChange = { artistInput = it },
-                        label = { Text("Исполнитель или IP ПК") }
+                        label = { Text("Исполнитель или IP ПК") },
+                        singleLine = true
                     )
                     OutlinedTextField(
                         value = titleInput,
                         onValueChange = { titleInput = it },
-                        label = { Text("Композиция") }
+                        label = { Text("Композиция") },
+                        singleLine = true
                     )
                 }
             },
