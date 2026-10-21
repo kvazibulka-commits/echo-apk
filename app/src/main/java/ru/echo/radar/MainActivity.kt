@@ -707,8 +707,7 @@ fun EchoRadarApp() {
     }
 
     if (showSettingsModal) {
-        var artistInput by remember { mutableStateOf("") }
-        var titleInput by remember { mutableStateOf("") }
+        var ipInput by remember { mutableStateOf("") }
 
         AlertDialog(
             onDismissRequest = { showSettingsModal = false },
@@ -767,15 +766,9 @@ fun EchoRadarApp() {
                     }
 
                     OutlinedTextField(
-                        value = artistInput,
-                        onValueChange = { artistInput = it },
-                        label = { Text("Исполнитель или IP ПК") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = titleInput,
-                        onValueChange = { titleInput = it },
-                        label = { Text("Композиция") },
+                        value = ipInput,
+                        onValueChange = { ipInput = it },
+                        label = { Text("IP-адрес ПК (напр. 192.168.0.214:8080)") },
                         singleLine = true
                     )
                 }
@@ -783,14 +776,14 @@ fun EchoRadarApp() {
             confirmButton = {
                 Button(
                     onClick = {
-                        if (artistInput.isNotBlank() || titleInput.isNotBlank()) {
-                            EchoStateRepository.updateMyPlayingTrack(artistInput, titleInput, "manual")
+                        if (ipInput.isNotBlank()) {
+                            EchoStateRepository.setCustomServerIp(ipInput.trim())
                         }
                         showSettingsModal = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
                 ) {
-                    Text("Сохранить")
+                    Text("Сохранить IP")
                 }
             },
             dismissButton = {
@@ -813,16 +806,16 @@ fun InteractiveRadarField(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7000, easing = LinearEasing),
+            animation = tween(durationMillis = 6000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "sweep_angle"
     )
     val pulse by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.25f,
+        initialValue = 0.9f,
+        targetValue = 1.35f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = LinearEasing),
+            animation = tween(durationMillis = 2200, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "node_pulse"
@@ -862,7 +855,7 @@ fun InteractiveRadarField(
 
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF0F2942), Color(0xFF070B14)),
+                    colors = listOf(Color(0xFF091326), Color(0xFF04070D)),
                     center = Offset(cx, cy),
                     radius = maxR
                 ),
@@ -872,7 +865,7 @@ fun InteractiveRadarField(
 
             listOf(0.33f, 0.66f, 1.0f).forEach { frac ->
                 drawCircle(
-                    color = Color(0xFF1E293B),
+                    color = Color(0xFF1E293B).copy(alpha = 0.7f),
                     radius = maxR * frac,
                     center = Offset(cx, cy),
                     style = Stroke(width = 1.5f)
@@ -885,16 +878,22 @@ fun InteractiveRadarField(
                 cy + maxR * sin(sweepRad)
             )
             drawLine(
-                color = Color(0xFF38BDF8).copy(alpha = 0.45f),
+                color = Color(0xFF38BDF8).copy(alpha = 0.55f),
                 start = Offset(cx, cy),
                 end = beamEnd,
-                strokeWidth = 2.5f
+                strokeWidth = 3f
             )
 
             drawCircle(
                 color = Color(0xFF38BDF8),
                 radius = 6f,
                 center = Offset(cx, cy)
+            )
+            drawCircle(
+                color = Color(0xFF38BDF8).copy(alpha = 0.3f),
+                radius = 14f * pulse,
+                center = Offset(cx, cy),
+                style = Stroke(width = 1f)
             )
 
             signals.forEach { sig ->
@@ -904,30 +903,31 @@ fun InteractiveRadarField(
                 val sy = cy + r * sin(rad)
                 val isSelected = sig.id == selectedSignalId
                 val nodeColor = Color(sig.colorHex)
+                val constrainAlpha = (1.1f - sig.distanceRatio * 0.5f).coerceIn(0.4f, 1.0f)
 
                 if (isSelected) {
                     drawLine(
-                        color = nodeColor.copy(alpha = 0.55f),
+                        color = nodeColor.copy(alpha = 0.7f),
                         start = Offset(cx, cy),
                         end = Offset(sx, sy),
                         strokeWidth = 2f
                     )
                     drawCircle(
-                        color = nodeColor.copy(alpha = 0.28f),
-                        radius = 20f * pulse,
+                        color = nodeColor.copy(alpha = 0.35f),
+                        radius = 22f * pulse,
                         center = Offset(sx, sy)
                     )
                 }
 
                 drawCircle(
-                    color = nodeColor.copy(alpha = 0.2f),
+                    color = nodeColor.copy(alpha = 0.25f * constrainAlpha),
                     radius = 12f,
-                    center = Offset(sx, sy)
+                    center = Offset(cx, sy)
                 )
                 drawCircle(
-                    color = if (isSelected) Color.White else nodeColor,
-                    radius = if (isSelected) 8f else 6f,
-                    center = Offset(sx, sy)
+                    color = if (isSelected) Color.White else nodeColor.copy(alpha = constrainAlpha),
+                    radius = if (isSelected) 8f else 5.5f,
+                    center = Offset(cx, sy)
                 )
             }
         }
