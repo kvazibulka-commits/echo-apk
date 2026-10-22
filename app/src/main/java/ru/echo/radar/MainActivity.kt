@@ -1,35 +1,36 @@
 package ru.echo.radar
 
-import android.app.SearchManager
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,18 +39,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -61,18 +68,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.cos
@@ -82,14 +91,37 @@ import kotlin.math.sin
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        EchoStateRepository.initLocalStore(this)
+        EchoStateRepository.initLocalStore(applicationContext)
+        rebindMediaListener(applicationContext)
+
         setContent {
-            EchoMainScreen()
+            val echoColorScheme = darkColorScheme(
+                primary = Color(0xFF38BDF8),
+                secondary = Color(0xFFA855F7),
+                background = Color(0xFF070A12),
+                surface = Color(0xFF111726),
+                onPrimary = Color.Black,
+                onBackground = Color(0xFFE2E8F0),
+                onSurface = Color(0xFFE2E8F0)
+            )
+            MaterialTheme(colorScheme = echoColorScheme) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    EchoRadarApp()
+                }
+            }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        rebindMediaListener(applicationContext)
     }
 }
 
-private fun checkNotificationPermission(context: Context): Boolean {
+fun checkNotificationPermission(context: Context): Boolean {
     val enabledListeners = Settings.Secure.getString(
         context.contentResolver,
         "enabled_notification_listeners"
@@ -97,49 +129,52 @@ private fun checkNotificationPermission(context: Context): Boolean {
     return enabledListeners.contains(context.packageName)
 }
 
-private fun rebindMediaListener(context: Context) {
+fun rebindMediaListener(context: Context) {
+    if (!checkNotificationPermission(context)) return
     try {
-        NotificationListenerService.requestRebind(
-            ComponentName(context, EchoMediaListenerService::class.java)
+        val componentName = ComponentName(context, EchoMediaListenerService::class.java)
+        context.packageManager.setComponentEnabledSetting(
+            componentName,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP
         )
+        context.packageManager.setComponentEnabledSetting(
+            componentName,
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP
+        )
+        NotificationListenerService.requestRebind(componentName)
     } catch (_: Exception) {
     }
 }
 
-private fun launchPlayerSearch(context: Context, artist: String, title: String) {
-    val fullTitle = "$artist — $title".trim()
-    val queryEncoded = Uri.encode("$artist $title")
-
+fun launchPlayerSearch(context: Context, artist: String, title: String) {
+    val query = Uri.encode("$artist $title".trim())
+    val yandexIntent = Intent(Intent.ACTION_VIEW, Uri.parse("yandexmusic://search?text=$query"))
+    val vkIntent = Intent(Intent.ACTION_VIEW, Uri.parse("vk://search?q=$query"))
+    val webIntent = Intent(
+        Intent.ACTION_VIEW,
+        Uri.parse("https://music.yandex.ru/search?text=$query")
+    )
     try {
-        val mediaIntent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
-            putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
-            putExtra(SearchManager.QUERY, "$artist $title")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        if (mediaIntent.resolveActivity(context.packageManager) != null) {
-            context.startActivity(mediaIntent)
-            Toast.makeText(context, "Запуск в плеере: $fullTitle", Toast.LENGTH_SHORT).show()
-            return
-        }
+        context.startActivity(yandexIntent)
     } catch (_: Exception) {
-    }
-
-    try {
-        val searchUri = Uri.parse("https://music.yandex.ru/search?text=$queryEncoded")
-        val browserIntent = Intent(Intent.ACTION_VIEW, searchUri).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(vkIntent)
+        } catch (_: Exception) {
+            try {
+                context.startActivity(webIntent)
+            } catch (_: Exception) {
+                Toast.makeText(context, "Не удалось открыть плеер", Toast.LENGTH_SHORT).show()
+            }
         }
-        context.startActivity(browserIntent)
-        Toast.makeText(context, "Открываем поиск: $fullTitle", Toast.LENGTH_SHORT).show()
-    } catch (_: Exception) {
-        Toast.makeText(context, "Не удалось открыть музыкальное приложение", Toast.LENGTH_SHORT).show()
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun EchoMainScreen() {
+fun EchoRadarApp() {
     val context = LocalContext.current
+
     val presenceEnabled by EchoStateRepository.presenceEnabled.collectAsState()
     val myTrack by EchoStateRepository.myCurrentTrack.collectAsState()
     val nearbySignals by EchoStateRepository.nearbySignals.collectAsState()
@@ -151,1393 +186,1367 @@ fun EchoMainScreen() {
     val liveZones by EchoStateRepository.liveCityZones.collectAsState()
     val myCurrentZone by EchoStateRepository.myCurrentZone.collectAsState()
 
-    var hasOsAccess by remember { mutableStateOf(checkNotificationPermission(context)) }
-    var currentTab by remember { mutableIntStateOf(0) }
-    var selectedSignalId by remember { mutableStateOf<String?>(null) }
-    var selectedCapsuleId by remember { mutableStateOf<String?>(null) }
-    var isDropCapsuleOpen by remember { mutableStateOf(false) }
-    var isSettingsOpen by remember { mutableStateOf(false) }
-
-    val activeSignal = nearbySignals.find { it.id == selectedSignalId }
-    val activeCapsule = nearbyCapsules.find { it.id == selectedCapsuleId }
-    val isPcLinked = myTrack.sourceName.contains("Эфир ПК")
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedSignal by remember { mutableStateOf<EchoTrackSignal?>(null) }
+    var selectedCapsule by remember { mutableStateOf<EchoTimeCapsule?>(null) }
+    var showCapsuleCreator by remember { mutableStateOf(false) }
+    var showSettingsModal by remember { mutableStateOf(false) }
+    var hasNotifPermission by remember { mutableStateOf(checkNotificationPermission(context)) }
 
     LaunchedEffect(Unit) {
-        val prefs = context.getSharedPreferences("echo_radar_local_store", Context.MODE_PRIVATE)
-        val savedIp = prefs.getString("saved_custom_host", null)
-        if (savedIp.isNullOrBlank()) {
-            EchoStateRepository.setCustomServerIp("192.168.0.214:8080")
-        }
         while (true) {
-            val granted = checkNotificationPermission(context)
-            hasOsAccess = granted
-            if (granted) rebindMediaListener(context)
-            delay(2500)
+            hasNotifPermission = checkNotificationPermission(context)
+            delay(3000)
         }
     }
 
-    LaunchedEffect(incomingBanner?.id) {
+    LaunchedEffect(incomingBanner) {
         if (incomingBanner != null) {
-            delay(6000)
+            delay(4500)
             EchoStateRepository.dismissBanner()
         }
     }
 
-    val demoTracks = remember {
-        listOf(
-            Triple("Яндекс Музыка", "Кино", "Спокойная ночь"),
-            Triple("VK Музыка", "Wardruna", "Helvegen"),
-            Triple("Poweramp", "Slowdive", "Alison"),
-            Triple("Звук", "Dead Can Dance", "Anabasis")
-        )
-    }
-    var demoIndex by remember { mutableIntStateOf(0) }
-
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color(0xFF060A12)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF050811),
+                        Color(0xFF0B1325),
+                        Color(0xFF060913)
+                    )
+                )
+            )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
+            // Верхняя панель: логотип, локация, статус эфира и кнопка настроек
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "ЭХО",
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 3.sp,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (presenceEnabled && listenerConnected) Color(0xFF22C55E)
+                                    else Color(0xFFF59E0B)
+                                )
+                        )
+                    }
                     Text(
-                        text = "Э  Х  О",
-                        color = Color(0xFFF8FAFC),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "📍 $myCurrentZone",
-                        color = Color(0xFF64748B),
+                        text = "Зона: $myCurrentZone",
                         fontSize = 12.sp,
-                        modifier = Modifier.clickable { isSettingsOpen = true }
+                        color = Color(0xFF94A3B8)
                     )
                 }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (presenceEnabled) Color(0xFF0F2942) else Color(0xFF1E293B))
-                            .border(
-                                1.dp,
-                                if (presenceEnabled) Color(0xFF38BDF8) else Color(0xFF475569),
-                                RoundedCornerShape(20.dp)
-                            )
-                            .clickable { EchoStateRepository.togglePresence() }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
-                    ) {
-                        Text(
-                            text = if (presenceEnabled) "● В эфире" else "○ Скрыт",
-                            color = if (presenceEnabled) Color(0xFF38BDF8) else Color(0xFF94A3B8),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = presenceEnabled,
+                        onCheckedChange = { EchoStateRepository.togglePresence() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF38BDF8),
+                            checkedTrackColor = Color(0xFF0C4A6E)
                         )
-                    }
-
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(Color(0xFF0F172A))
-                            .border(
-                                1.dp,
-                                if (hasOsAccess || listenerConnected) Color(0xFF1E293B) else Color(0xFFF59E0B),
-                                CircleShape
-                            )
-                            .clickable { isSettingsOpen = true }
-                            .padding(horizontal = 11.dp, vertical = 7.dp)
+                            .background(Color(0xFF1E293B))
+                            .clickable { showSettingsModal = true }
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            text = "⚙",
-                            color = if (hasOsAccess || listenerConnected) Color(0xFF94A3B8) else Color(0xFFF59E0B),
-                            fontSize = 14.sp
-                        )
+                        Text(text = "⚙", fontSize = 16.sp, color = Color(0xFFE2E8F0))
                     }
                 }
             }
 
-            incomingBanner?.let { banner ->
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
+            // Плашка предупреждения, если не выдан доступ к уведомлениям
+            if (!hasNotifPermission) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1D2E)),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF1E1B4B))
-                        .border(1.dp, Color(0xFFA78BFA), RoundedCornerShape(14.dp))
-                        .clickable { EchoStateRepository.dismissBanner() }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .clickable {
+                            context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+                        }
                 ) {
-                    Text(
-                        text = "${banner.symbol}  ${banner.message}",
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(text = "✕", color = Color(0xFF94A3B8), fontSize = 13.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            val myAuraColor = Color(myTrack.colorHex)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(myAuraColor.copy(alpha = 0.16f), Color(0xFF0F172A))
-                        )
-                    )
-                    .border(1.dp, myAuraColor.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                    .clickable { isSettingsOpen = true }
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                GenerativeAvatarView(
-                    color = myAuraColor,
-                    petals = myTrack.avatarPetals,
-                    modifier = Modifier.size(46.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "♫ ${myTrack.artist} — ${myTrack.title}",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${myTrack.personaTitle} · ${myTrack.moodLabel}",
-                        color = Color(0xFF38BDF8),
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = myTrack.sourceName,
-                        color = if (isPcLinked) Color(0xFF34D399) else Color(0xFF64748B),
-                        fontSize = 11.sp,
-                        fontWeight = if (isPcLinked) FontWeight.SemiBold else FontWeight.Normal
-                    )
-                    if (myTrack.reactions.isNotEmpty()) {
-                        val reactLine = myTrack.reactions.entries.joinToString("  ") { "${it.key} ${it.value}" }
-                        Text(
-                            text = "Отклики: $reactLine",
-                            color = Color(0xFFA78BFA),
-                            fontSize = 11.sp
-                        )
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Нет доступа к медиа-уведомлениям",
+                                color = Color(0xFFFDA4AF),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = "Нажмите, чтобы включить «ЭХО» в списке служб и транслировать музыку из Яндекс.Музыки / VK",
+                                color = Color(0xFFFECDD3),
+                                fontSize = 11.sp
+                            )
+                        }
+                        Text(text = "→", color = Color(0xFFFDA4AF), fontSize = 18.sp)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // Входящий импульс-отклик
+            AnimatedVisibility(
+                visible = incomingBanner != null,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                incomingBanner?.let { banner ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF172554)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                            .clickable { EchoStateRepository.dismissBanner() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = banner.symbol, fontSize = 24.sp)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = banner.message,
+                                color = Color(0xFFBAE6FD),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Моя текущая виниловая карточка-паспорт
+            MyPassportHeaderCard(
+                myTrack = myTrack,
+                presenceEnabled = presenceEnabled,
+                onDropCapsuleClick = { showCapsuleCreator = true }
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Переключатель вкладок
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(Color(0xFF0F172A))
-                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
-                    .padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                val savedCount = if (savedTracks.isNotEmpty()) " (${savedTracks.size})" else ""
-                val tabNames = listOf("◎ Сонар", "≋ Поток", "✦ Следы$savedCount")
-                tabNames.forEachIndexed { idx, label ->
-                    val isSelected = currentTab == idx
+                val tabs = listOf("Сонар", "Эфир (${nearbySignals.size})", "Следы и Тайники")
+                tabs.forEachIndexed { index, title ->
+                    val active = selectedTab == index
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(if (isSelected) Color(0xFF1E293B) else Color.Transparent)
-                            .clickable { currentTab = idx }
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (active) Color(0xFF1E293B) else Color.Transparent)
+                            .clickable { selectedTab = index }
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = label,
-                            color = if (isSelected) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                            text = title,
                             fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            color = if (active) Color(0xFF38BDF8) else Color(0xFF64748B)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            when (currentTab) {
-                0 -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0xFF0A101F))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        LiveSonarCanvas(
-                            signals = nearbySignals,
-                            capsules = nearbyCapsules,
-                            selectedSignalId = selectedSignalId ?: "",
-                            selectedCapsuleId = selectedCapsuleId ?: "",
-                            myColor = myAuraColor,
-                            onSelectSignal = {
-                                selectedCapsuleId = null
-                                selectedSignalId = it.id
-                            },
-                            onSelectCapsule = {
-                                selectedSignalId = null
-                                selectedCapsuleId = it.id
-                            }
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    Brush.horizontalGradient(
-                                        colors = listOf(Color(0xFFD97706).copy(alpha = 0.25f), Color(0xFF1E293B))
-                                    )
-                                )
-                                .border(1.dp, Color(0xFFFBBF24).copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                .clickable { isDropCapsuleOpen = true }
-                                .padding(vertical = 9.dp, horizontal = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "◆ Спрятать музыкальный тайник в «$myCurrentZone»",
-                                color = Color(0xFFFDE68A),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        if (nearbyCapsules.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "◆ МУЗЫКАЛЬНЫЕ ТАЙНИКИ В ЭФИРЕ (открываются при резонансе ≥ 85%):",
-                                color = Color(0xFFFBBF24),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(7.dp)
-                            ) {
-                                nearbyCapsules.forEach { cap ->
-                                    val goldColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(
-                                                Brush.horizontalGradient(
-                                                    colors = listOf(goldColor.copy(alpha = 0.14f), Color(0xFF111827))
-                                                )
-                                            )
-                                            .border(1.dp, goldColor.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                                            .clickable {
-                                                selectedSignalId = null
-                                                selectedCapsuleId = cap.id
-                                            }
-                                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "◆ ${cap.artist} — ${cap.title}",
-                                                color = Color(0xFFFDE68A),
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = if (cap.isUnlocked)
-                                                    "🔓 Открыт (${cap.compatibilityPercent}% рез.) · 📍 ${cap.zoneName}"
-                                                else
-                                                    "🔒 Запечатан (${cap.compatibilityPercent}% / нужно 85%+) · 📍 ${cap.zoneName}",
-                                                color = goldColor,
-                                                fontSize = 11.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        Text(
-                                            text = "~${cap.distanceMeters} м",
-                                            color = goldColor,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Text(
-                            text = "Слушатели вокруг вас (нажмите, чтобы открыть паспорт волны):",
-                            color = Color(0xFF64748B),
-                            fontSize = 11.sp,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            nearbySignals.forEach { sig ->
-                                val sigColor = Color(sig.colorHex)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(
-                                            Brush.horizontalGradient(
-                                                colors = listOf(sigColor.copy(alpha = 0.12f), Color(0xFF111827))
-                                            )
-                                        )
-                                        .border(1.dp, sigColor.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
-                                        .clickable {
-                                            selectedCapsuleId = null
-                                            selectedSignalId = sig.id
-                                        }
-                                        .padding(horizontal = 14.dp, vertical = 11.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(9.dp)
-                                                .clip(CircleShape)
-                                                .background(sigColor)
-                                        )
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text(
-                                                text = "♫ ${sig.artist} — ${sig.title}",
-                                                color = Color.White,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "${sig.personaTitle} · ${sig.compatibilityPercent}% рез.",
-                                                color = Color(0xFF94A3B8),
-                                                fontSize = 11.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "~${sig.distanceMeters} м",
-                                        color = sigColor,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                1 -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0xFF0A101F))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        nearbySignals.forEach { sig ->
-                            val sigColor = Color(sig.colorHex)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            colors = listOf(sigColor.copy(alpha = 0.15f), Color(0xFF111827))
-                                        )
-                                    )
-                                    .border(1.dp, sigColor.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                                    .clickable { selectedSignalId = sig.id }
-                                    .padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "♫ ${sig.artist} — ${sig.title}",
-                                        color = Color.White,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = "${sig.personaTitle} · ${sig.moodLabel}",
-                                        color = sigColor,
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "Совместимость ${sig.compatibilityPercent}% · Встреча №${sig.encountersCount}",
-                                        color = Color(0xFF94A3B8),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                                Text(
-                                    text = "~${sig.distanceMeters} м",
-                                    color = sigColor,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-                }
-
-                2 -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0xFF0A101F))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        if (savedTracks.isNotEmpty()) {
-                            Text(
-                                text = "СОХРАНЁННЫЕ НАХОДКИ",
-                                color = Color(0xFF34D399),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            savedTracks.forEach { item ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(Color(0xFF111827))
-                                        .padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "♫ ${item.artist} — ${item.title}",
-                                            color = Color(0xFFF1F5F9),
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "${item.personaTitle} · ${item.savedAt}",
-                                            color = Color(0xFF94A3B8),
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(
-                                            text = "♫ Слушать",
-                                            color = Color(0xFF38BDF8),
-                                            fontSize = 12.sp,
-                                            modifier = Modifier
-                                                .clickable { launchPlayerSearch(context, item.artist, item.title) }
-                                                .padding(6.dp)
-                                        )
-                                        Text(
-                                            text = "✕",
-                                            color = Color(0xFF64748B),
-                                            fontSize = 12.sp,
-                                            modifier = Modifier
-                                                .clickable { EchoStateRepository.removeSavedTrack(item) }
-                                                .padding(6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = "КАРТА ЗВУЧАНИЯ ГОРОДА",
-                            color = Color(0xFF38BDF8),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        liveZones.forEach { zone ->
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF111827))
-                                    .padding(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = zone.placeName,
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = zone.dominantVibe,
-                                        color = Color(0xFF34D399),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                                Text(
-                                    text = "${zone.recentArtists} · ${zone.listenersCount} сигн.",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-
-                        Text(
-                            text = "ВЕЧЕРНИЙ ДНЕВНИК СЛЕДОВ",
-                            color = Color(0xFFA78BFA),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        eveningTraces.forEach { trace ->
-                            Text(text = "• $trace", color = Color(0xFFCBD5E1), fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // МОДАЛЬНОЕ ОКНО: МУЗЫКАЛЬНЫЙ ТАЙНИК (КАПСУЛА ВРЕМЕНИ)
-    if (activeCapsule != null) {
-        val goldAccent = if (activeCapsule.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
-        val isCapTrackSaved = savedTracks.any {
-            it.artist.equals(activeCapsule.artist, ignoreCase = true) &&
-                it.title.equals(activeCapsule.title, ignoreCase = true)
-        }
-
-        AlertDialog(
-            onDismissRequest = { selectedCapsuleId = null },
-            containerColor = Color(0xFF080D1A),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCBD5E1),
-            shape = RoundedCornerShape(22.dp),
-            title = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(goldAccent.copy(alpha = 0.28f), Color(0xFF111827))
-                            )
-                        )
-                        .border(1.dp, goldAccent.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text(
-                            text = "◆ Тайник: ${activeCapsule.personaTitle}",
-                            color = Color(0xFFFDE68A),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Text(
-                            text = "📍 ${activeCapsule.zoneName} · Ваш резонанс: ${activeCapsule.compatibilityPercent}% (~${activeCapsule.distanceMeters} м)",
-                            color = goldAccent,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0xFF111827))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = "♫ ${activeCapsule.artist} — ${activeCapsule.title}",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Эстетический кластер: ${activeCapsule.moodLabel}",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 11.sp
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (activeCapsule.isUnlocked) Color(0xFF1E1B18) else Color(0xFF131B2E))
-                            .border(
-                                1.dp,
-                                if (activeCapsule.isUnlocked) Color(0xFFFBBF24).copy(alpha = 0.5f) else Color(0xFF334155),
-                                RoundedCornerShape(12.dp)
-                            )
-                            .padding(12.dp)
-                    ) {
-                        Column {
-                            Text(
-                                text = if (activeCapsule.isUnlocked)
-                                    "🔓 КАПСУЛА РАСШИФРОВАНА (частоты совпали):"
-                                else
-                                    "🔒 КАПСУЛА ЗАПЕЧАТАНА (требуется резонанс ≥ 85%):",
-                                color = goldAccent,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(5.dp))
-                            Text(
-                                text = if (activeCapsule.isUnlocked)
-                                    "«${activeCapsule.secretMessage}»"
-                                else
-                                    "Настройте свой плеер на близкую эстетическую волну («${activeCapsule.moodLabel}»), чтобы ключ резонанса открыл послание автора.",
-                                color = Color.White,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                launchPlayerSearch(context, activeCapsule.artist, activeCapsule.title)
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
-                        ) {
-                            Text("♫ Слушать", fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                EchoStateRepository.saveTrackToFinds(
-                                    EchoTrackSignal(
-                                        id = activeCapsule.id,
-                                        artist = activeCapsule.artist,
-                                        title = activeCapsule.title,
-                                        sourceName = "Тайник · ${activeCapsule.zoneName}",
-                                        distanceMeters = activeCapsule.distanceMeters,
-                                        angleDegrees = activeCapsule.angleDegrees,
-                                        distanceRatio = activeCapsule.distanceRatio,
-                                        personaTitle = activeCapsule.personaTitle,
-                                        personaObservation = activeCapsule.secretMessage,
-                                        moodLabel = activeCapsule.moodLabel,
-                                        compatibilityPercent = activeCapsule.compatibilityPercent,
-                                        resonanceDays = 1,
-                                        encountersCount = 1,
-                                        colorHex = 0xFFFBBF24L,
-                                        avatarPetals = 6,
-                                        reactions = emptyMap()
-                                    )
-                                )
-                            },
-                            modifier = Modifier.weight(1f),
-                            border = BorderStroke(1.dp, if (isCapTrackSaved) Color(0xFF34D399) else Color(0xFFFBBF24))
-                        ) {
-                            Text(
-                                text = if (isCapTrackSaved) "✓ В находках" else "★ В находки",
-                                color = if (isCapTrackSaved) Color(0xFF34D399) else Color(0xFFFDE68A),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { selectedCapsuleId = null }) {
-                    Text("Закрыть", color = Color(0xFF94A3B8))
-                }
-            }
-        )
-    }
-
-    // МОДАЛЬНОЕ ОКНО: СОЗДАНИЕ НОВОГО ТАЙНИКА В ТЕКУЩЕЙ ЗОНЕ
-    if (isDropCapsuleOpen) {
-        var secretInput by remember { mutableStateOf("") }
-
-        AlertDialog(
-            onDismissRequest = { isDropCapsuleOpen = false },
-            containerColor = Color(0xFF0F172A),
-            titleContentColor = Color(0xFFFDE68A),
-            textContentColor = Color(0xFFCBD5E1),
-            shape = RoundedCornerShape(22.dp),
-            title = { Text("◆ Спрятать музыкальный тайник") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Ваша текущая песня «${myTrack.artist} — ${myTrack.title}» будет запечатана в гео-зоне «$myCurrentZone».",
-                        color = Color.White,
-                        fontSize = 12.sp
+            // Основной контент выбранной вкладки
+            Box(modifier = Modifier.weight(1f)) {
+                when (selectedTab) {
+                    0 -> SonarTabView(
+                        myTrack = myTrack,
+                        signals = nearbySignals,
+                        capsules = nearbyCapsules,
+                        onSignalClick = { selectedSignal = it },
+                        onCapsuleClick = { selectedCapsule = it }
                     )
-                    Text(
-                        text = "Прочитать ваше послание смогут только те слушатели рядом, чей музыкальный резонанс с вами достигнет 85%+.",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
-                    OutlinedTextField(
-                        value = secretInput,
-                        onValueChange = { if (it.length <= 140) secretInput = it },
-                        label = { Text("Тайное послание или промокод (до 140 симв.)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (secretInput.isNotBlank()) {
-                            EchoStateRepository.dropTimeCapsule(secretInput)
-                            Toast.makeText(context, "◆ Тайник запечатан в эфире!", Toast.LENGTH_SHORT).show()
-                            isDropCapsuleOpen = false
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
-                ) {
-                    Text("Запечатать капсулу")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { isDropCapsuleOpen = false }) {
-                    Text("Отмена", color = Color(0xFF94A3B8))
-                }
-            }
-        )
-    }
-
-    // МОДАЛЬНОЕ ОКНО: ВИНИЛОВАЯ КАРТОЧКА-ПАСПОРТ СЛУШАТЕЛЯ
-    if (activeSignal != null) {
-        val isTrackSaved = savedTracks.any {
-            it.artist.equals(activeSignal.artist, ignoreCase = true) &&
-                it.title.equals(activeSignal.title, ignoreCase = true)
-        }
-        val auraColor = Color(activeSignal.colorHex)
-        var lastClickedSymbol by remember { mutableStateOf<String?>(null) }
-
-        LaunchedEffect(lastClickedSymbol) {
-            if (lastClickedSymbol != null) {
-                delay(500)
-                lastClickedSymbol = null
-            }
-        }
-
-        val glowTransition = rememberInfiniteTransition(label = "aura_glow")
-        val auraAlpha by glowTransition.animateFloat(
-            initialValue = 0.20f,
-            targetValue = 0.45f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1800, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "aura_alpha"
-        )
-
-        AlertDialog(
-            onDismissRequest = { selectedSignalId = null },
-            containerColor = Color(0xFF080D1A),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCBD5E1),
-            shape = RoundedCornerShape(22.dp),
-            title = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(auraColor.copy(alpha = auraAlpha), Color(0xFF111827))
-                            )
-                        )
-                        .border(1.dp, auraColor.copy(alpha = 0.6f), RoundedCornerShape(14.dp))
-                        .padding(12.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        GenerativeAvatarView(
-                            color = auraColor,
-                            petals = activeSignal.avatarPetals,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = activeSignal.personaTitle,
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Резонанс вкусов: ${activeSignal.compatibilityPercent}% · ~${activeSignal.distanceMeters} м",
-                                color = auraColor,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0xFF111827))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = "♫ ${activeSignal.artist} — ${activeSignal.title}",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Атмосфера: ${activeSignal.moodLabel} (${activeSignal.sourceName})",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 11.sp
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF131B2E))
-                            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
-                            .padding(10.dp)
-                    ) {
-                        Text(
-                            text = "✦ Дней в резонансе: ${activeSignal.resonanceDays} · Встреча №${activeSignal.encountersCount}",
-                            color = Color(0xFFC4B5FD),
-                            fontSize = 11.sp
-                        )
-                    }
-
-                    Text(
-                        text = "«${activeSignal.personaObservation}»",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 12.sp
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                launchPlayerSearch(context, activeSignal.artist, activeSignal.title)
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                        ) {
-                            Text("♫ Слушать", fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = { EchoStateRepository.saveTrackToFinds(activeSignal) },
-                            modifier = Modifier.weight(1f),
-                            border = BorderStroke(1.dp, if (isTrackSaved) Color(0xFF34D399) else Color(0xFF38BDF8))
-                        ) {
-                            Text(
-                                text = if (isTrackSaved) "✓ В находках" else "★ Сохранить",
-                                color = if (isTrackSaved) Color(0xFF34D399) else Color(0xFF38BDF8),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Отправить импульс в эфир:",
-                            color = Color(0xFF64748B),
-                            fontSize = 11.sp
-                        )
-                        if (lastClickedSymbol != null) {
-                            Text(
-                                text = "✦ Импульс $lastClickedSymbol отправлен!",
-                                color = auraColor,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    val reactionSymbols = listOf("🦇", "🌑", "🌊", "⚔", "🌲", "🎼", "☁")
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        reactionSymbols.forEach { sym ->
-                            val count = activeSignal.reactions[sym] ?: 0
-                            val isTriggered = lastClickedSymbol == sym
-                            val scaleVal by animateFloatAsState(
-                                targetValue = if (isTriggered) 1.25f else 1.0f,
-                                animationSpec = tween(durationMillis = 220),
-                                label = "sym_scale"
-                            )
-
-                            Box(
-                                modifier = Modifier
-                                    .scale(scaleVal)
-                                    .clip(CircleShape)
-                                    .background(if (isTriggered) auraColor.copy(alpha = 0.35f) else Color(0xFF111827))
-                                    .border(
-                                        1.dp,
-                                        if (isTriggered) Color.White else auraColor.copy(alpha = 0.45f),
-                                        CircleShape
-                                    )
-                                    .clickable {
-                                        lastClickedSymbol = sym
-                                        EchoStateRepository.sendSymbolReaction(activeSignal.id, sym)
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = if (count > 0) "$sym $count" else sym,
-                                    color = Color.White,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { selectedSignalId = null }) {
-                    Text("Закрыть", color = Color(0xFF94A3B8))
-                }
-            }
-        )
-    }
-
-    // МОДАЛЬНОЕ ОКНО НАСТРОЕК С ЗАПОМИНАНИЕМ IP
-    if (isSettingsOpen) {
-        val prefs = remember {
-            context.getSharedPreferences("echo_radar_local_store", Context.MODE_PRIVATE)
-        }
-        val currentSavedHost = remember {
-            prefs.getString("saved_custom_host", "192.168.0.214:8080") ?: "192.168.0.214:8080"
-        }
-        var ipInput by remember { mutableStateOf(currentSavedHost) }
-
-        AlertDialog(
-            onDismissRequest = { isSettingsOpen = false },
-            containerColor = Color(0xFF0F172A),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCBD5E1),
-            title = { Text("Настройки эфира и зоны") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Ваша текущая гео-зона:",
-                        color = Color(0xFF38BDF8),
-                        fontSize = 12.sp
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        EchoStateRepository.availableZones.forEach { z ->
-                            val isCur = z == myCurrentZone
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (isCur) Color(0xFF0F2942) else Color(0xFF1E293B))
-                                    .border(
-                                        1.dp,
-                                        if (isCur) Color(0xFF38BDF8) else Color(0xFF334155),
-                                        RoundedCornerShape(14.dp)
-                                    )
-                                    .clickable { EchoStateRepository.setMyZone(z) }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    text = z,
-                                    color = if (isCur) Color.White else Color(0xFF94A3B8),
-                                    fontSize = 11.sp
-                                )
-                            }
-                        }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                try {
-                                    context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                                } catch (_: Exception) {
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Доступ ОС", color = Color(0xFF38BDF8), fontSize = 11.sp)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                val item = demoTracks[demoIndex % demoTracks.size]
-                                demoIndex++
-                                EchoStateRepository.updateMyPlayingTrack(item.second, item.third, item.first)
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Тест-трек ♫", color = Color(0xFF34D399), fontSize = 11.sp)
-                        }
-                    }
-
-                    Text(
-                        text = if (isPcLinked) "● Связь с сервером ПК активна ($currentSavedHost)"
-                        else "○ Поиск сервера ПК ($currentSavedHost)...",
-                        color = if (isPcLinked) Color(0xFF34D399) else Color(0xFFF59E0B),
-                        fontSize = 11.sp
-                    )
-
-                    OutlinedTextField(
-                        value = ipInput,
-                        onValueChange = { newValue ->
-                            if (newValue.length <= 45) {
-                                ipInput = newValue
-                            }
+                    1 -> StreamSignalsTabView(
+                        signals = nearbySignals,
+                        onSignalClick = { selectedSignal = it },
+                        onReaction = { id, symbol -> EchoStateRepository.sendSymbolReaction(id, symbol) },
+                        onSaveTrack = { signal ->
+                            val added = EchoStateRepository.saveTrackToFinds(signal)
+                            Toast.makeText(
+                                context,
+                                if (added) "Сохранено в находки" else "Уже в списке находок",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         },
-                        label = { Text("IP-адрес ПК (напр. 192.168.0.214:8080)") },
-                        singleLine = true
+                        onListenClick = { artist, title -> launchPlayerSearch(context, artist, title) }
+                    )
+                    2 -> TracesAndCapsulesTabView(
+                        myCurrentZone = myCurrentZone,
+                        liveZones = liveZones,
+                        capsules = nearbyCapsules,
+                        savedTracks = savedTracks,
+                        eveningTraces = eveningTraces,
+                        onZoneSelect = { EchoStateRepository.setMyZone(it) },
+                        onCapsuleClick = { selectedCapsule = it },
+                        onListenClick = { artist, title -> launchPlayerSearch(context, artist, title) },
+                        onRemoveSaved = { EchoStateRepository.removeSavedTrack(it) }
                     )
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val cleanIp = ipInput.trim()
-                        if (cleanIp.isNotEmpty() && cleanIp.length <= 45) {
-                            EchoStateRepository.setCustomServerIp(cleanIp)
-                            Toast.makeText(context, "IP сервера сохранён: $cleanIp", Toast.LENGTH_SHORT).show()
-                        }
-                        isSettingsOpen = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                ) {
-                    Text("Сохранить IP")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { isSettingsOpen = false }) {
-                    Text("Закрыть", color = Color(0xFF94A3B8))
-                }
             }
+        }
+
+        // Модальное окно винилового паспорта слушателя
+        selectedSignal?.let { signal ->
+            VinylPassportDialog(
+                signal = signal,
+                onDismiss = { selectedSignal = null },
+                onReact = { symbol ->
+                    EchoStateRepository.sendSymbolReaction(signal.id, symbol)
+                    Toast.makeText(context, "Отклик $symbol отправлен в эфир", Toast.LENGTH_SHORT).show()
+                },
+                onSave = {
+                    val saved = EchoStateRepository.saveTrackToFinds(signal)
+                    Toast.makeText(
+                        context,
+                        if (saved) "Трек сохранен в находки" else "Уже есть в находках",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onListen = {
+                    launchPlayerSearch(context, signal.artist, signal.title)
+                }
+            )
+        }
+
+        // Модальное окно музыкального тайника (капсулы времени)
+        selectedCapsule?.let { capsule ->
+            TimeCapsuleDialog(
+                capsule = capsule,
+                onDismiss = { selectedCapsule = null },
+                onListen = {
+                    launchPlayerSearch(context, capsule.artist, capsule.title)
+                }
+            )
+        }
+
+        // Модальное окно создания гео-тайника
+        if (showCapsuleCreator) {
+            DropCapsuleDialog(
+                myTrack = myTrack,
+                currentZone = myCurrentZone,
+                onDismiss = { showCapsuleCreator = false },
+                onConfirm = { secretMessage ->
+                    EchoStateRepository.dropTimeCapsule(secretMessage)
+                    showCapsuleCreator = false
+                    Toast.makeText(context, "Музыкальный тайник спрятан в зоне $myCurrentZone", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+
+        // Модальное окно настроек (сервер, зоны, ручной тест, переподключение)
+        if (showSettingsModal) {
+            SettingsModalDialog(
+                currentZone = myCurrentZone,
+                availableZones = EchoStateRepository.availableZones,
+                onZoneChange = { EchoStateRepository.setMyZone(it) },
+                onSaveServerIp = { ip ->
+                    EchoStateRepository.setCustomServerIp(ip)
+                    Toast.makeText(context, "IP сервера обновлен", Toast.LENGTH_SHORT).show()
+                },
+                onSimulateTrack = { artist, title ->
+                    EchoStateRepository.updateMyPlayingTrack(artist, title, "ru.yandex.music")
+                    Toast.makeText(context, "Тестовый сигнал отправлен в эфир", Toast.LENGTH_SHORT).show()
+                },
+                onRebindService = {
+                    rebindMediaListener(context)
+                    Toast.makeText(context, "Перезапуск службы уведомлений...", Toast.LENGTH_SHORT).show()
+                },
+                onOpenSystemNotificationSettings = {
+                    context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+                },
+                onDismiss = { showSettingsModal = false }
+            )
+        }
+    }
+}
+
+@Composable
+fun MyPassportHeaderCard(
+    myTrack: EchoTrackSignal,
+    presenceEnabled: Boolean,
+    onDropCapsuleClick: () -> Unit
+) {
+    val auraColor = Color(myTrack.colorHex)
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                brush = Brush.horizontalGradient(
+                    colors = listOf(auraColor.copy(alpha = 0.7f), Color(0xFF1E293B))
+                ),
+                shape = RoundedCornerShape(18.dp)
+            )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GenerativeAvatarView(
+                colorHex = myTrack.colorHex,
+                petals = myTrack.avatarPetals,
+                modifier = Modifier.size(52.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = myTrack.personaTitle,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = auraColor
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "• ${myTrack.moodLabel}",
+                        fontSize = 11.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (presenceEnabled) "${myTrack.artist} — ${myTrack.title}" else "Режим невидимки (эфир скрыт)",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = myTrack.personaObservation,
+                    fontSize = 11.sp,
+                    fontStyle = FontStyle.Italic,
+                    color = Color(0xFF94A3B8),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF1E293B))
+                    .clickable { onDropCapsuleClick() }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "⏳ Тайник",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF38BDF8)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SonarTabView(
+    myTrack: EchoTrackSignal,
+    signals: List<EchoTrackSignal>,
+    capsules: List<EchoTimeCapsule>,
+    onSignalClick: (EchoTrackSignal) -> Unit,
+    onCapsuleClick: (EchoTimeCapsule) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            LiveSonarCanvas(
+                myTrack = myTrack,
+                signals = signals,
+                capsules = capsules,
+                onSignalTap = onSignalClick,
+                onCapsuleTap = onCapsuleClick
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Коснитесь пульсирующей звезды слушателя или янтарного тайника на сонаре",
+            fontSize = 11.sp,
+            color = Color(0xFF64748B)
         )
     }
 }
 
 @Composable
 fun LiveSonarCanvas(
+    myTrack: EchoTrackSignal,
     signals: List<EchoTrackSignal>,
     capsules: List<EchoTimeCapsule>,
-    selectedSignalId: String,
-    selectedCapsuleId: String,
-    myColor: Color,
-    onSelectSignal: (EchoTrackSignal) -> Unit,
-    onSelectCapsule: (EchoTimeCapsule) -> Unit
+    onSignalTap: (EchoTrackSignal) -> Unit,
+    onCapsuleTap: (EchoTimeCapsule) -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "sonar_anim")
-    val radarAngle by infiniteTransition.animateFloat(
+    val infiniteTransition = rememberInfiniteTransition(label = "sonar_transition")
+    val radarSweepAngle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 6000, easing = LinearEasing),
+            animation = tween(durationMillis = 7000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "radar_angle"
+        label = "sweep_angle"
     )
-    val sonarWave by infiniteTransition.animateFloat(
-        initialValue = 0.05f,
-        targetValue = 1.0f,
+    val pulseFactor by infiniteTransition.animateFloat(
+        initialValue = 0.75f,
+        targetValue = 1.25f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3600, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "sonar_wave"
-    )
-    val nodePulse by infiniteTransition.animateFloat(
-        initialValue = 0.88f,
-        targetValue = 1.32f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = LinearEasing),
+            animation = tween(durationMillis = 2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "node_pulse"
+        label = "pulse_factor"
     )
 
-    Box(
+    Canvas(
         modifier = Modifier
-            .fillMaxWidth()
-            .height(260.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(
-            modifier = Modifier
-                .size(250.dp)
-                .pointerInput(signals, capsules) {
-                    detectTapGestures { offset ->
-                        val cx = size.width / 2f
-                        val cy = size.height / 2f
-                        val maxR = (size.width.coerceAtMost(size.height) / 2f) * 0.88f
+            .fillMaxSize()
+            .padding(8.dp)
+            .pointerInput(signals, capsules) {
+                detectTapGestures { tapOffset ->
+                    val centerX = size.width / 2f
+                    val centerY = size.height / 2f
+                    val maxRadius = (minOf(size.width, size.height) / 2f) * 0.88f
 
-                        val closestSig = signals.minByOrNull { sig ->
-                            val rad = sig.angleDegrees * (PI.toFloat() / 180f)
-                            val r = maxR * sig.distanceRatio
-                            val sx = cx + r * cos(rad)
-                            val sy = cy + r * sin(rad)
-                            hypot(offset.x - sx, offset.y - sy)
+                    // Проверка нажатия на сигналы слушателей
+                    for (sig in signals) {
+                        val rad = sig.angleDegrees * (PI / 180.0)
+                        val r = sig.distanceRatio.coerceIn(0.18f, 0.92f) * maxRadius
+                        val sx = centerX + (r * cos(rad)).toFloat()
+                        val sy = centerY + (r * sin(rad)).toFloat()
+                        if (hypot(tapOffset.x - sx, tapOffset.y - sy) <= 46f) {
+                            onSignalTap(sig)
+                            return@detectTapGestures
                         }
-                        val sigDist = closestSig?.let { sig ->
-                            val rad = sig.angleDegrees * (PI.toFloat() / 180f)
-                            val r = maxR * sig.distanceRatio
-                            hypot(offset.x - (cx + r * cos(rad)), offset.y - (cy + r * sin(rad)))
-                        } ?: Float.MAX_VALUE
+                    }
 
-                        val closestCap = capsules.minByOrNull { cap ->
-                            val rad = cap.angleDegrees * (PI.toFloat() / 180f)
-                            val r = maxR * cap.distanceRatio
-                            val sx = cx + r * cos(rad)
-                            val sy = cy + r * sin(rad)
-                            hypot(offset.x - sx, offset.y - sy)
-                        }
-                        val capDist = closestCap?.let { cap ->
-                            val rad = cap.angleDegrees * (PI.toFloat() / 180f)
-                            val r = maxR * cap.distanceRatio
-                            hypot(offset.x - (cx + r * cos(rad)), offset.y - (cy + r * sin(rad)))
-                        } ?: Float.MAX_VALUE
-
-                        if (capDist < sigDist && capDist < 42f && closestCap != null) {
-                            onSelectCapsule(closestCap)
-                        } else if (closestSig != null && sigDist < 48f) {
-                            onSelectSignal(closestSig)
+                    // Проверка нажатия на гео-тайники
+                    for (cap in capsules) {
+                        val rad = cap.angleDegrees * (PI / 180.0)
+                        val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
+                        val cx = centerX + (r * cos(rad)).toFloat()
+                        val cy = centerY + (r * sin(rad)).toFloat()
+                        if (hypot(tapOffset.x - cx, tapOffset.y - cy) <= 44f) {
+                            onCapsuleTap(cap)
+                            return@detectTapGestures
                         }
                     }
                 }
-        ) {
-            val cx = size.width / 2f
-            val cy = size.height / 2f
-            val maxR = (size.minDimension / 2f) * 0.88f
+            }
+    ) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val maxRadius = (minOf(size.width, size.height) / 2f) * 0.88f
+        val myAura = Color(myTrack.colorHex)
 
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF0A192F), Color(0xFF04070D)),
-                    center = Offset(cx, cy),
-                    radius = maxR
+        // Глубокое атмосферное свечение сонара
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    myAura.copy(alpha = 0.16f),
+                    Color(0xFF0F172A).copy(alpha = 0.08f),
+                    Color.Transparent
                 ),
-                radius = maxR,
-                center = Offset(cx, cy)
+                center = center,
+                radius = maxRadius * 1.1f
+            ),
+            radius = maxRadius * 1.1f,
+            center = center
+        )
+
+        // Концентрические кольца дистанции
+        val ringFractions = listOf(0.28f, 0.55f, 0.82f, 1.0f)
+        ringFractions.forEach { frac ->
+            drawCircle(
+                color = Color(0xFF1E293B),
+                radius = maxRadius * frac,
+                center = center,
+                style = Stroke(width = 1.5f)
             )
+        }
+
+        // Оси координат сонара
+        drawLine(
+            color = Color(0xFF1E293B).copy(alpha = 0.6f),
+            start = Offset(center.x - maxRadius, center.y),
+            end = Offset(center.x + maxRadius, center.y),
+            strokeWidth = 1f
+        )
+        drawLine(
+            color = Color(0xFF1E293B).copy(alpha = 0.6f),
+            start = Offset(center.x, center.y - maxRadius),
+            end = Offset(center.x, center.y + maxRadius),
+            strokeWidth = 1f
+        )
+
+        // Луч сканирования сонара
+        val sweepRad = radarSweepAngle * (PI / 180.0)
+        val sweepEnd = Offset(
+            x = center.x + (maxRadius * cos(sweepRad)).toFloat(),
+            y = center.y + (maxRadius * sin(sweepRad)).toFloat()
+        )
+        drawLine(
+            brush = Brush.linearGradient(
+                colors = listOf(myAura.copy(alpha = 0.65f), Color.Transparent),
+                start = center,
+                end = sweepEnd
+            ),
+            start = center,
+            end = sweepEnd,
+            strokeWidth = 3f,
+            cap = StrokeCap.Round
+        )
+
+        // Отрисовка музыкальных тайников (янтарные кристаллы)
+        capsules.forEach { cap ->
+            val rad = cap.angleDegrees * (PI / 180.0)
+            val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
+            val pos = Offset(
+                x = center.x + (r * cos(rad)).toFloat(),
+                y = center.y + (r * sin(rad)).toFloat()
+            )
+            val capColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFFF59E0B)
 
             drawCircle(
-                color = myColor.copy(alpha = (1f - sonarWave) * 0.35f),
-                radius = maxR * sonarWave,
-                center = Offset(cx, cy),
+                color = capColor.copy(alpha = 0.22f * pulseFactor),
+                radius = 22f * pulseFactor,
+                center = pos
+            )
+            val diamond = Path().apply {
+                moveTo(pos.x, pos.y - 11f)
+                lineTo(pos.x + 11f, pos.y)
+                lineTo(pos.x, pos.y + 11f)
+                lineTo(pos.x - 11f, pos.y)
+                close()
+            }
+            drawPath(path = diamond, color = capColor)
+        }
+
+        // Отрисовка сигналов слушателей поблизости
+        signals.forEach { sig ->
+            val rad = sig.angleDegrees * (PI / 180.0)
+            val r = sig.distanceRatio.coerceIn(0.18f, 0.92f) * maxRadius
+            val pos = Offset(
+                x = center.x + (r * cos(rad)).toFloat(),
+                y = center.y + (r * sin(rad)).toFloat()
+            )
+            val sigColor = Color(sig.colorHex)
+
+            // Линия резонанса, если высокая совместимость
+            if (sig.compatibilityPercent >= 75) {
+                drawLine(
+                    color = sigColor.copy(alpha = 0.28f),
+                    start = center,
+                    end = pos,
+                    strokeWidth = 1.5f
+                )
+            }
+
+            // Аура сигнала
+            drawCircle(
+                color = sigColor.copy(alpha = 0.25f),
+                radius = 24f * pulseFactor,
+                center = pos
+            )
+            drawCircle(
+                color = sigColor,
+                radius = 9f,
+                center = pos
+            )
+            drawCircle(
+                color = Color.White,
+                radius = 3.5f,
+                center = pos
+            )
+        }
+
+        // Центральное ядро (пользователь)
+        drawCircle(
+            color = myAura.copy(alpha = 0.3f),
+            radius = 24f * pulseFactor,
+            center = center
+        )
+        drawCircle(
+            color = myAura,
+            radius = 10f,
+            center = center
+        )
+    }
+}
+
+@Composable
+fun GenerativeAvatarView(
+    colorHex: Long,
+    petals: Int,
+    modifier: Modifier = Modifier
+) {
+    val baseColor = Color(colorHex)
+    val safePetals = petals.coerceIn(3, 12)
+    Canvas(modifier = modifier) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val radius = minOf(size.width, size.height) / 2f
+
+        // Виниловая подложка с аурой
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(baseColor.copy(alpha = 0.45f), Color(0xFF090D16)),
+                center = center,
+                radius = radius
+            ),
+            radius = radius,
+            center = center
+        )
+
+        // Генеративные лепестки архетипа
+        for (i in 0 until safePetals) {
+            val angle = (i * (360.0 / safePetals)) * (PI / 180.0)
+            val petalCenter = Offset(
+                x = center.x + (radius * 0.42f * cos(angle)).toFloat(),
+                y = center.y + (radius * 0.42f * sin(angle)).toFloat()
+            )
+            drawCircle(
+                color = baseColor.copy(alpha = 0.55f),
+                radius = radius * 0.36f,
+                center = petalCenter,
                 style = Stroke(width = 2f)
             )
+        }
 
-            listOf(0.33f, 0.66f, 1.0f).forEach { ring ->
-                drawCircle(
-                    color = Color(0xFF1E293B).copy(alpha = 0.75f),
-                    radius = maxR * ring,
-                    center = Offset(cx, cy),
-                    style = Stroke(width = 1.5f)
-                )
-            }
+        // Центральное яблоко винила
+        drawCircle(
+            color = baseColor,
+            radius = radius * 0.22f,
+            center = center
+        )
+        drawCircle(
+            color = Color(0xFF090D16),
+            radius = radius * 0.08f,
+            center = center
+        )
+    }
+}
 
-            val radAngle = radarAngle * (PI.toFloat() / 180f)
-            val beamTarget = Offset(
-                cx + maxR * cos(radAngle),
-                cy + maxR * sin(radAngle)
+@Composable
+fun StreamSignalsTabView(
+    signals: List<EchoTrackSignal>,
+    onSignalClick: (EchoTrackSignal) -> Unit,
+    onReaction: (String, String) -> Unit,
+    onSaveTrack: (EchoTrackSignal) -> Unit,
+    onListenClick: (String, String) -> Unit
+) {
+    if (signals.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = "В радиусе сонара пока тихо...",
+                color = Color(0xFF64748B),
+                fontSize = 14.sp
             )
-            drawLine(
-                color = Color(0xFF38BDF8).copy(alpha = 0.55f),
-                start = Offset(cx, cy),
-                end = beamTarget,
-                strokeWidth = 3f
-            )
+        }
+        return
+    }
 
-            drawCircle(
-                color = myColor,
-                radius = 6.5f,
-                center = Offset(cx, cy)
-            )
-            drawCircle(
-                color = myColor.copy(alpha = 0.35f),
-                radius = 14f * nodePulse,
-                center = Offset(cx, cy),
-                style = Stroke(width = 1.2f)
-            )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(signals, key = { it.id }) { sig ->
+            val aura = Color(sig.colorHex)
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, aura.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                    .clickable { onSignalClick(sig) }
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        GenerativeAvatarView(
+                            colorHex = sig.colorHex,
+                            petals = sig.avatarPetals,
+                            modifier = Modifier.size(44.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = sig.personaTitle,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = aura
+                                )
+                                Text(
+                                    text = "${sig.distanceMeters} м • ${sig.compatibilityPercent}% резонанс",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Text(
+                                text = "${sig.artist} — ${sig.title}",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF8FAFC)
+                            )
+                            Text(
+                                text = sig.personaObservation,
+                                fontSize = 12.sp,
+                                fontStyle = FontStyle.Italic,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                    }
 
-            // Отрисовка золотых кристаллов-тайников (Капсул времени)
-            capsules.forEach { cap ->
-                val rad = cap.angleDegrees * (PI.toFloat() / 180f)
-                val r = maxR * cap.distanceRatio
-                val sx = cx + r * cos(rad)
-                val sy = cy + r * sin(rad)
-                val isSelected = cap.id == selectedCapsuleId
-                val capColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFF94A3B8)
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                drawCircle(
-                    color = capColor.copy(alpha = 0.25f),
-                    radius = if (isSelected) 18f * nodePulse else 12f,
-                    center = Offset(sx, sy)
-                )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("✦", "🔥", "🌊", "🌙").forEach { sym ->
+                                val count = sig.reactions[sym] ?: 0
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF1E293B))
+                                        .clickable { onReaction(sig.id, sym) }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = if (count > 0) "$sym $count" else sym,
+                                        fontSize = 12.sp,
+                                        color = Color(0xFFE2E8F0)
+                                    )
+                                }
+                            }
+                        }
 
-                val diamond = Path().apply {
-                    val d = if (isSelected) 8.5f else 6.5f
-                    moveTo(sx, sy - d)
-                    lineTo(sx + d, sy)
-                    lineTo(sx, sy + d)
-                    lineTo(sx - d, sy)
-                    close()
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF1E293B))
+                                    .clickable { onSaveTrack(sig) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(text = "★ В находки", fontSize = 11.sp, color = Color(0xFFFACC15))
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF0C4A6E))
+                                    .clickable { onListenClick(sig.artist, sig.title) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(text = "▶ Слушать", fontSize = 11.sp, color = Color(0xFF38BDF8))
+                            }
+                        }
+                    }
                 }
-                drawPath(
-                    path = diamond,
-                    color = if (isSelected) Color.White else capColor
-                )
-            }
-
-            // Отрисовка сигналов слушателей
-            signals.forEach { sig ->
-                val rad = sig.angleDegrees * (PI.toFloat() / 180f)
-                val r = maxR * sig.distanceRatio
-                val sx = cx + r * cos(rad)
-                val sy = cy + r * sin(rad)
-                val isSelected = sig.id == selectedSignalId
-                val sigColor = Color(sig.colorHex)
-                val depthAlpha = (1.1f - sig.distanceRatio * 0.55f).coerceIn(0.38f, 1.0f)
-
-                if (isSelected) {
-                    drawLine(
-                        color = sigColor.copy(alpha = 0.75f),
-                        start = Offset(cx, cy),
-                        end = Offset(sx, sy),
-                        strokeWidth = 2f
-                    )
-                    drawCircle(
-                        color = sigColor.copy(alpha = 0.35f),
-                        radius = 22f * nodePulse,
-                        center = Offset(sx, sy)
-                    )
-                }
-
-                drawCircle(
-                    color = sigColor.copy(alpha = 0.25f * depthAlpha),
-                    radius = 12f,
-                    center = Offset(sx, sy)
-                )
-                drawCircle(
-                    color = if (isSelected) Color.White else sigColor.copy(alpha = depthAlpha),
-                    radius = if (isSelected) 8f else 5.5f,
-                    center = Offset(sx, sy)
-                )
             }
         }
     }
 }
 
 @Composable
-fun GenerativeAvatarView(
-    color: Color,
-    petals: Int,
-    modifier: Modifier = Modifier
+fun TracesAndCapsulesTabView(
+    myCurrentZone: String,
+    liveZones: List<CityZoneTrace>,
+    capsules: List<EchoTimeCapsule>,
+    savedTracks: List<SavedEchoTrack>,
+    eveningTraces: List<String>,
+    onZoneSelect: (String) -> Unit,
+    onCapsuleClick: (EchoTimeCapsule) -> Unit,
+    onListenClick: (String, String) -> Unit,
+    onRemoveSaved: (SavedEchoTrack) -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "avatar_wave")
-    val phase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 6.283f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 5500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "phase_shift"
-    )
-
-    Canvas(modifier = modifier) {
-        val cx = size.width / 2f
-        val cy = size.height / 2f
-        val baseR = (size.minDimension / 2f) * 0.68f
-
-        drawCircle(
-            color = color.copy(alpha = 0.16f),
-            radius = baseR * 1.2f,
-            center = Offset(cx, cy)
-        )
-
-        val path = Path()
-        val steps = 72
-        for (i in 0..steps) {
-            val angle = (i.toFloat() / steps) * (2f * PI.toFloat())
-            val wave = sin(angle * petals + phase) * (baseR * 0.22f)
-            val r = (baseR + wave).coerceAtLeast(2f)
-            val x = cx + r * cos(angle)
-            val y = cy + r * sin(angle)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Выбор городской зоны
+        item {
+            Text(
+                text = "Атмосфера городских зон",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE2E8F0)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                liveZones.forEach { zone ->
+                    val isSelected = zone.placeName == myCurrentZone
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A)
+                        ),
+                        modifier = Modifier
+                            .width(210.dp)
+                            .border(
+                                width = 1.dp,
+                                color = if (isSelected) Color(0xFF38BDF8) else Color(0xFF1E293B),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .clickable { onZoneSelect(zone.placeName) }
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = zone.placeName,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF8FAFC)
+                            )
+                            Text(
+                                text = "Вайб: ${zone.dominantVibe} • ${zone.listenersCount} в эфире",
+                                fontSize = 11.sp,
+                                color = Color(0xFF38BDF8)
+                            )
+                            Text(
+                                text = zone.recentArtists,
+                                fontSize = 11.sp,
+                                color = Color(0xFF94A3B8),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
         }
-        path.close()
 
-        drawPath(path = path, color = color.copy(alpha = 0.42f))
-        drawPath(path = path, color = color, style = Stroke(width = 2f))
+        // Секция гео-тайников
+        item {
+            Text(
+                text = "Музыкальные тайники рядом (${capsules.size})",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFFBBF24)
+            )
+        }
+        items(capsules, key = { it.id }) { cap ->
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1917)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                    .clickable { onCapsuleClick(cap) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "⏳ ${cap.personaTitle} • ${cap.distanceMeters} м",
+                            fontSize = 11.sp,
+                            color = Color(0xFFFBBF24)
+                        )
+                        Text(
+                            text = if (cap.isUnlocked) "${cap.artist} — ${cap.title}" else "Запечатанная капсула (${cap.moodLabel})",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = cap.secretMessage,
+                            fontSize = 12.sp,
+                            color = Color(0xFFD6D3D1),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(text = "Открыть →", fontSize = 12.sp, color = Color(0xFFFBBF24))
+                }
+            }
+        }
+
+        // Сохраненные находки
+        item {
+            Text(
+                text = "Сохраненные находки (${savedTracks.size})",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE2E8F0)
+            )
+        }
+        items(savedTracks) { item ->
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${item.artist} — ${item.title}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "${item.personaTitle} • ${item.moodLabel} • ${item.savedAt}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "▶",
+                            fontSize = 16.sp,
+                            color = Color(0xFF38BDF8),
+                            modifier = Modifier.clickable { onListenClick(item.artist, item.title) }
+                        )
+                        Text(
+                            text = "✕",
+                            fontSize = 16.sp,
+                            color = Color(0xFFEF4444),
+                            modifier = Modifier.clickable { onRemoveSaved(item) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Вечерняя хроника пересечений
+        item {
+            Text(
+                text = "Хроника вечерних следов",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE2E8F0)
+            )
+        }
+        items(eveningTraces) { trace ->
+            Text(
+                text = "• $trace",
+                fontSize = 12.sp,
+                color = Color(0xFF94A3B8),
+                modifier = Modifier.padding(vertical = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun VinylPassportDialog(
+    signal: EchoTrackSignal,
+    onDismiss: () -> Unit,
+    onReact: (String) -> Unit,
+    onSave: () -> Unit,
+    onListen: () -> Unit
+) {
+    val aura = Color(signal.colorHex)
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, aura.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                GenerativeAvatarView(
+                    colorHex = signal.colorHex,
+                    petals = signal.avatarPetals,
+                    modifier = Modifier.size(84.dp)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = signal.personaTitle,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Black,
+                    color = aura
+                )
+                Text(
+                    text = "${signal.moodLabel} • ${signal.distanceMeters} м от вас • Резонанс ${signal.compatibilityPercent}%",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Пересечений в городе: ${signal.encountersCount} (дней в резонансе: ${signal.resonanceDays})",
+                    fontSize = 11.sp,
+                    color = Color(0xFF38BDF8)
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "${signal.artist} — ${signal.title}",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "«${signal.personaObservation}»",
+                            fontSize = 12.sp,
+                            fontStyle = FontStyle.Italic,
+                            color = Color(0xFFCBD5E1)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    listOf("✦", "🔥", "🌊", "🌙").forEach { sym ->
+                        OutlinedButton(onClick = { onReact(sym) }) {
+                            Text(text = sym, fontSize = 16.sp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onSave,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(text = "★ В находки", color = Color(0xFFFACC15), fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = onListen,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(text = "▶ Слушать", color = Color.White, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TimeCapsuleDialog(
+    capsule: EchoTimeCapsule,
+    onDismiss: () -> Unit,
+    onListen: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1917)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(22.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(text = "⏳ Музыкальный тайник", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24))
+                Text(text = "Зона: ${capsule.zoneName} • ${capsule.distanceMeters} м", fontSize = 12.sp, color = Color(0xFFA8A29E))
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "${capsule.artist} — ${capsule.title}",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Text(
+                    text = "${capsule.personaTitle} (${capsule.moodLabel})",
+                    fontSize = 12.sp,
+                    color = Color(0xFFFBBF24)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Послание: «${capsule.secretMessage}»",
+                    fontSize = 13.sp,
+                    fontStyle = FontStyle.Italic,
+                    color = Color(0xFFE7E5E4)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Закрыть", color = Color(0xFFD6D3D1))
+                    }
+                    Button(
+                        onClick = onListen,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                    ) {
+                        Text("▶ Открыть в плеере", color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DropCapsuleDialog(
+    myTrack: EchoTrackSignal,
+    currentZone: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var message by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = "Оставить музыкальный тайник",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Трек «${myTrack.artist} — ${myTrack.title}» будет закреплен в локации $currentZone",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = message,
+                    onValueChange = { message = it },
+                    label = { Text("Анонимное послание для нашедшего") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Отмена")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            onConfirm(if (message.isBlank()) "Слушай этот момент здесь..." else message.trim())
+                        }
+                    ) {
+                        Text("Спрятать")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsModalDialog(
+    currentZone: String,
+    availableZones: List<String>,
+    onZoneChange: (String) -> Unit,
+    onSaveServerIp: (String) -> Unit,
+    onSimulateTrack: (String, String) -> Unit,
+    onRebindService: () -> Unit,
+    onOpenSystemNotificationSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var serverIpInput by remember { mutableStateOf("") }
+    var testArtist by remember { mutableStateOf("Кино") }
+    var testTitle by remember { mutableStateOf("Спокойная ночь") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text(
+                    text = "Настройки ЭХО",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(text = "Локальный / облачный сервер (UDP-автопоиск активен):", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = serverIpInput,
+                        onValueChange = { serverIpInput = it },
+                        placeholder = { Text("Например: 192.168.1.45:8080") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = { if (serverIpInput.isNotBlank()) onSaveServerIp(serverIpInput.trim()) }) {
+                        Text("ОК")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(text = "Сменить городскую зону:", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    availableZones.forEach { zone ->
+                        val active = zone == currentZone
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (active) Color(0xFF0284C7) else Color(0xFF1E293B))
+                                .clickable { onZoneChange(zone) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(text = zone, fontSize = 11.sp, color = Color.White)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(text = "Тестовый сигнал в эфир:", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = testArtist,
+                        onValueChange = { testArtist = it },
+                        label = { Text("Артист") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = testTitle,
+                        onValueChange = { testTitle = it },
+                        label = { Text("Трек") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Button(
+                    onClick = { onSimulateTrack(testArtist, testTitle) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Отправить тестовый трек")
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onRebindService,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Перезапуск службы", fontSize = 11.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenSystemNotificationSettings,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Доступ к шторке", fontSize = 11.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Закрыть")
+                }
+            }
+        }
     }
 }
