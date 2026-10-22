@@ -417,6 +417,7 @@ fun EchoRadarApp() {
                         myCurrentZone = myCurrentZone,
                         signals = nearbySignals,
                         capsules = nearbyCapsules,
+                        liveZones = liveZones,
                         signalTimestamps = signalTimestamps,
                         onSignalClick = { selectedSignal = it },
                         onCapsuleClick = { selectedCapsule = it }
@@ -531,6 +532,7 @@ fun CityNightMapTabView(
     myCurrentZone: String,
     signals: List<EchoTrackSignal>,
     capsules: List<EchoTimeCapsule>,
+    liveZones: List<CityZoneTrace>,
     signalTimestamps: Map<String, Long>,
     onSignalClick: (EchoTrackSignal) -> Unit,
     onCapsuleClick: (EchoTimeCapsule) -> Unit
@@ -587,6 +589,7 @@ fun CityNightMapTabView(
             val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
             val mapScale = 240f * zoomScale
 
+            // Координатная сетка
             val gridSize = 70f * zoomScale
             var x = (center.x % gridSize)
             while (x < size.width) {
@@ -599,6 +602,7 @@ fun CityNightMapTabView(
                 y += gridSize
             }
 
+            // Ночная Москва-река
             val riverPath = Path().apply {
                 moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
                 cubicTo(
@@ -613,7 +617,47 @@ fun CityNightMapTabView(
                 style = Stroke(width = 24f * zoomScale, cap = StrokeCap.Round)
             )
 
+            // Звуковой туман кварталов (Ambient Audio Fog)
+            val zoneRelativeOffsets = mapOf(
+                "Вечерняя улица" to Offset(0f, -40f),
+                "Сретенка · Камерные бары" to Offset(120f, -110f),
+                "Парк Горького · Набережная" to Offset(-130f, 170f),
+                "Покровка · Ночные кофейни" to Offset(150f, 60f),
+                "Северный лесопарк" to Offset(-110f, -240f)
+            )
+            val zoneColors = mapOf(
+                "Вечерняя улица" to Color(0xFF38BDF8),
+                "Сретенка · Камерные бары" to Color(0xFFA855F7),
+                "Парк Горького · Набережная" to Color(0xFF34D399),
+                "Покровка · Ночные кофейни" to Color(0xFFFBBF24),
+                "Северный лесопарк" to Color(0xFF818CF8)
+            )
+
+            liveZones.forEach { z ->
+                val baseOff = zoneRelativeOffsets[z.placeName] ?: Offset.Zero
+                val fogCenter = Offset(center.x + baseOff.x * zoomScale, center.y + baseOff.y * zoomScale)
+                val fogCol = zoneColors[z.placeName] ?: Color(0xFF38BDF8)
+                val fogRadius = (100f + (z.listenersCount.coerceIn(1, 10) * 12f)) * zoomScale
+
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            fogCol.copy(alpha = 0.12f),
+                            fogCol.copy(alpha = 0.04f),
+                            Color.Transparent
+                        ),
+                        center = fogCenter,
+                        radius = fogRadius
+                    ),
+                    radius = fogRadius,
+                    center = fogCenter
+                )
+            }
+
+            // Вычисление экранных позиций сигналов
             val nowMs = System.currentTimeMillis()
+            val signalPositions = mutableListOf<Pair<EchoTrackSignal, Offset>>()
+
             signals.forEach { sig ->
                 val rad = sig.angleDegrees * (PI / 180.0)
                 val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
@@ -621,8 +665,37 @@ fun CityNightMapTabView(
                     x = center.x + (r * cos(rad)).toFloat(),
                     y = center.y + (r * sin(rad)).toFloat()
                 )
-                val haloColor = Color(sig.colorHex)
+                signalPositions.add(sig to pos)
+            }
 
+            // Нити резонанса между близкими по вкусу слушателями
+            for (i in signalPositions.indices) {
+                val (s1, p1) = signalPositions[i]
+                if (s1.compatibilityPercent >= 78) {
+                    // Резонанс с центральным пользователем
+                    drawLine(
+                        color = Color(s1.colorHex).copy(alpha = 0.22f),
+                        start = center,
+                        end = p1,
+                        strokeWidth = 1.2f * zoomScale
+                    )
+                }
+                for (j in i + 1 until signalPositions.size) {
+                    val (s2, p2) = signalPositions[j]
+                    if (s1.compatibilityPercent >= 80 && s2.compatibilityPercent >= 80) {
+                        drawLine(
+                            color = Color(0xFFA855F7).copy(alpha = 0.18f),
+                            start = p1,
+                            end = p2,
+                            strokeWidth = 1f * zoomScale
+                        )
+                    }
+                }
+            }
+
+            // Отрисовка акустических ореолов (Sound Halos)
+            signalPositions.forEach { (sig, pos) ->
+                val haloColor = Color(sig.colorHex)
                 val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
                 val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
                 val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
@@ -652,6 +725,7 @@ fun CityNightMapTabView(
                 )
             }
 
+            // Тайники
             capsules.forEach { cap ->
                 val rad = cap.angleDegrees * (PI / 180.0)
                 val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
@@ -676,6 +750,7 @@ fun CityNightMapTabView(
                 drawPath(diamond, capColor)
             }
 
+            // Центр присутствия
             drawCircle(
                 color = Color(0xFF38BDF8).copy(alpha = 0.25f),
                 radius = 32f * zoomScale,
@@ -1357,7 +1432,6 @@ fun TracesAndCapsulesTabView(
             }
         }
 
-        // Блок находок с кнопкой «✦ Плейлист вечера»
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
