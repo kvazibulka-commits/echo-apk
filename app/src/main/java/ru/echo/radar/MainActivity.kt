@@ -196,7 +196,7 @@ fun EchoRadarApp() {
     var showSettingsModal by remember { mutableStateOf(false) }
     var hasNotifPermission by remember { mutableStateOf(checkNotificationPermission(context)) }
 
-    // Карта отслеживания времени появления сигналов для плавного затухания (Sound Decay)
+    // Карта отслеживания возраста сигналов для плавного затухания (Sound Decay)
     val signalTimestamps = remember { mutableStateMapOf<String, Long>() }
 
     LaunchedEffect(nearbySignals) {
@@ -217,7 +217,6 @@ fun EchoRadarApp() {
         }
     }
 
-    // Авто-скрытие входящего импульса через 4.5 секунды
     LaunchedEffect(incomingBanner) {
         if (incomingBanner != null) {
             delay(4500)
@@ -243,7 +242,7 @@ fun EchoRadarApp() {
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // Верхняя панель: статус, зона, кнопка настроек
+            // Верхняя панель
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -298,7 +297,6 @@ fun EchoRadarApp() {
                 }
             }
 
-            // Предупреждение о доступе к шторке
             if (!hasNotifPermission) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(
@@ -323,7 +321,7 @@ fun EchoRadarApp() {
                                 fontSize = 13.sp
                             )
                             Text(
-                                text = "Нажмите, чтобы включить «ЭХО» для перехвата треков из Яндекс.Музыки / VK",
+                                text = "Нажмите, чтобы включить «ЭХО» для перехвата музыки из Яндекс.Музыки / VK",
                                 color = Color(0xFFFECDD3),
                                 fontSize = 11.sp
                             )
@@ -333,7 +331,7 @@ fun EchoRadarApp() {
                 }
             }
 
-            // Входящий импульс-отклик с серверов / PWA
+            // Входящий импульс-отклик
             AnimatedVisibility(
                 visible = incomingBanner != null,
                 enter = fadeIn(),
@@ -376,7 +374,7 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 4 вкладки: Сонар, Карта города, Эфир, Следы и Тайники
+            // Вкладки интерфейса: Сонар, Карта города, Эфир, Следы и Тайники
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -409,7 +407,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Контент выбранной вкладки
             Box(modifier = Modifier.weight(1f)) {
                 when (selectedTab) {
                     0 -> SonarTabView(
@@ -460,15 +457,16 @@ fun EchoRadarApp() {
             }
         }
 
-        // Диалог паспорта слушателя
+        // Модальное окно паспорта слушателя
         selectedSignal?.let { signal ->
             VinylPassportDialog(
                 signal = signal,
                 onDismiss = { selectedSignal = null },
                 onReact = { symbol ->
+                    // Мгновенная отправка импульса и автоматическое закрытие карточки без лишних диалогов
                     EchoStateRepository.sendSymbolReaction(signal.id, symbol)
                     selectedSignal = null
-                    Toast.makeText(context, "Импульс $symbol отправлен", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Импульс $symbol отправлен в эфир", Toast.LENGTH_SHORT).show()
                 },
                 onSave = {
                     val saved = EchoStateRepository.saveTrackToFinds(signal)
@@ -484,7 +482,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Диалог тайника
         selectedCapsule?.let { capsule ->
             TimeCapsuleDialog(
                 capsule = capsule,
@@ -495,7 +492,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Диалог создания тайника
         if (showCapsuleCreator) {
             DropCapsuleDialog(
                 myTrack = myTrack,
@@ -509,7 +505,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Настройки
         if (showSettingsModal) {
             SettingsModalDialog(
                 currentZone = myCurrentZone,
@@ -597,7 +592,7 @@ fun CityNightMapTabView(
             val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
             val mapScale = 240f * zoomScale
 
-            // Координатная сетка ночного атласа
+            // Ночная координатная сетка
             val gridSize = 70f * zoomScale
             var x = (center.x % gridSize)
             while (x < size.width) {
@@ -610,7 +605,7 @@ fun CityNightMapTabView(
                 y += gridSize
             }
 
-            // Стилизованная лента реки (Москва-река)
+            // Ночная Москва-река
             val riverPath = Path().apply {
                 moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
                 cubicTo(
@@ -636,11 +631,11 @@ fun CityNightMapTabView(
                 )
                 val haloColor = Color(sig.colorHex)
 
-                // Коэффициент затухания (в течение 15 минут угасает до 20%)
+                // Плавное затухание ореола
+                val isGhost = sig.moodLabel.contains("Призрачный")
                 val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
-                val decayFactor = (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+                val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
-                // Рассеянный ореол
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
@@ -654,7 +649,6 @@ fun CityNightMapTabView(
                     radius = (36f + 14f * decayFactor) * zoomScale,
                     center = pos
                 )
-                // Виниловое ядро ореола
                 drawCircle(
                     color = haloColor.copy(alpha = decayFactor),
                     radius = (5f + 2f * decayFactor) * zoomScale,
@@ -667,7 +661,7 @@ fun CityNightMapTabView(
                 )
             }
 
-            // Музыкальные гео-тайники
+            // Музыкальные тайники
             capsules.forEach { cap ->
                 val rad = cap.angleDegrees * (PI / 180.0)
                 val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
@@ -980,7 +974,7 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
-        // Отрисовка тайников
+        // Тайники
         capsules.forEach { cap ->
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
@@ -1005,7 +999,7 @@ fun LiveSonarCanvas(
             drawPath(path = diamond, color = capColor)
         }
 
-        // Отрисовка сигналов с постепенным затуханием (Sound Decay)
+        // Отрисовка сигналов с эффектом Sound Decay
         val nowMs = System.currentTimeMillis()
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
@@ -1016,9 +1010,9 @@ fun LiveSonarCanvas(
             )
             val sigColor = Color(sig.colorHex)
 
-            // Затухание: свежие треки горят ярко (1.0), через 15 минут плавно угасают до (0.20)
+            val isGhost = sig.moodLabel.contains("Призрачный")
             val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
-            val decayFactor = (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+            val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
             if (sig.compatibilityPercent >= 75 && decayFactor > 0.4f) {
                 drawLine(
@@ -1029,13 +1023,11 @@ fun LiveSonarCanvas(
                 )
             }
 
-            // Мягкий световой ореол
             drawCircle(
                 color = sigColor.copy(alpha = 0.25f * decayFactor * pulseFactor),
                 radius = (16f + 8f * decayFactor) * pulseFactor,
                 center = pos
             )
-            // Виниловое ядро
             drawCircle(
                 color = sigColor.copy(alpha = decayFactor),
                 radius = (6f + 3f * decayFactor),
@@ -1134,13 +1126,18 @@ fun StreamSignalsTabView(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(signals, key = { it.id }) { sig ->
+            val isGhost = sig.moodLabel.contains("Призрачный")
             val aura = Color(sig.colorHex)
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, aura.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                    .border(
+                        1.dp,
+                        if (isGhost) aura.copy(alpha = 0.2f) else aura.copy(alpha = 0.35f),
+                        RoundedCornerShape(16.dp)
+                    )
                     .clickable { onSignalClick(sig) }
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
@@ -1160,7 +1157,7 @@ fun StreamSignalsTabView(
                                     text = sig.personaTitle,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = aura
+                                    color = if (isGhost) aura.copy(alpha = 0.7f) else aura
                                 )
                                 Text(
                                     text = "${sig.distanceMeters} м • ${sig.compatibilityPercent}%",
@@ -1172,7 +1169,7 @@ fun StreamSignalsTabView(
                                 text = "${sig.artist} — ${sig.title}",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFF8FAFC)
+                                color = if (isGhost) Color(0xFF94A3B8) else Color(0xFFF8FAFC)
                             )
                             Text(
                                 text = sig.personaObservation,
