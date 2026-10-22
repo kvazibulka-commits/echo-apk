@@ -196,7 +196,6 @@ fun EchoRadarApp() {
     var showSettingsModal by remember { mutableStateOf(false) }
     var hasNotifPermission by remember { mutableStateOf(checkNotificationPermission(context)) }
 
-    // Карта отслеживания возраста сигналов для плавного затухания (Sound Decay)
     val signalTimestamps = remember { mutableStateMapOf<String, Long>() }
 
     LaunchedEffect(nearbySignals) {
@@ -331,7 +330,6 @@ fun EchoRadarApp() {
                 }
             }
 
-            // Входящий импульс-отклик
             AnimatedVisibility(
                 visible = incomingBanner != null,
                 enter = fadeIn(),
@@ -365,7 +363,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Виниловый паспорт текущего трека
             MyPassportHeaderCard(
                 myTrack = myTrack,
                 presenceEnabled = presenceEnabled,
@@ -374,7 +371,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Вкладки интерфейса: Сонар, Карта города, Эфир, Следы и Тайники
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -451,19 +447,18 @@ fun EchoRadarApp() {
                         onZoneSelect = { EchoStateRepository.setMyZone(it) },
                         onCapsuleClick = { selectedCapsule = it },
                         onListenClick = { artist, title -> launchPlayerSearch(context, artist, title) },
-                        onRemoveSaved = { EchoStateRepository.removeSavedTrack(it) }
+                        onRemoveSaved = { EchoStateRepository.removeSavedTrack(it) },
+                        onExportPlaylist = { EchoStateRepository.exportEveningPlaylist(context) }
                     )
                 }
             }
         }
 
-        // Модальное окно паспорта слушателя
         selectedSignal?.let { signal ->
             VinylPassportDialog(
                 signal = signal,
                 onDismiss = { selectedSignal = null },
                 onReact = { symbol ->
-                    // Мгновенная отправка импульса и автоматическое закрытие карточки без лишних диалогов
                     EchoStateRepository.sendSymbolReaction(signal.id, symbol)
                     selectedSignal = null
                     Toast.makeText(context, "Импульс $symbol отправлен в эфир", Toast.LENGTH_SHORT).show()
@@ -592,7 +587,6 @@ fun CityNightMapTabView(
             val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
             val mapScale = 240f * zoomScale
 
-            // Ночная координатная сетка
             val gridSize = 70f * zoomScale
             var x = (center.x % gridSize)
             while (x < size.width) {
@@ -605,7 +599,6 @@ fun CityNightMapTabView(
                 y += gridSize
             }
 
-            // Ночная Москва-река
             val riverPath = Path().apply {
                 moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
                 cubicTo(
@@ -620,7 +613,6 @@ fun CityNightMapTabView(
                 style = Stroke(width = 24f * zoomScale, cap = StrokeCap.Round)
             )
 
-            // Акустические ореолы с эффектом затухания (Sound Decay)
             val nowMs = System.currentTimeMillis()
             signals.forEach { sig ->
                 val rad = sig.angleDegrees * (PI / 180.0)
@@ -631,8 +623,7 @@ fun CityNightMapTabView(
                 )
                 val haloColor = Color(sig.colorHex)
 
-                // Плавное затухание ореола
-                val isGhost = sig.moodLabel.contains("Призрачный")
+                val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
                 val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
                 val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
@@ -661,7 +652,6 @@ fun CityNightMapTabView(
                 )
             }
 
-            // Музыкальные тайники
             capsules.forEach { cap ->
                 val rad = cap.angleDegrees * (PI / 180.0)
                 val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
@@ -686,7 +676,6 @@ fun CityNightMapTabView(
                 drawPath(diamond, capColor)
             }
 
-            // Центр присутствия
             drawCircle(
                 color = Color(0xFF38BDF8).copy(alpha = 0.25f),
                 radius = 32f * zoomScale,
@@ -974,7 +963,6 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
-        // Тайники
         capsules.forEach { cap ->
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
@@ -999,7 +987,6 @@ fun LiveSonarCanvas(
             drawPath(path = diamond, color = capColor)
         }
 
-        // Отрисовка сигналов с эффектом Sound Decay
         val nowMs = System.currentTimeMillis()
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
@@ -1010,7 +997,7 @@ fun LiveSonarCanvas(
             )
             val sigColor = Color(sig.colorHex)
 
-            val isGhost = sig.moodLabel.contains("Призрачный")
+            val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
             val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
             val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
@@ -1126,7 +1113,7 @@ fun StreamSignalsTabView(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(signals, key = { it.id }) { sig ->
-            val isGhost = sig.moodLabel.contains("Призрачный")
+            val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
             val aura = Color(sig.colorHex)
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -1151,14 +1138,32 @@ fun StreamSignalsTabView(
                         Column(modifier = Modifier.weight(1f)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = sig.personaTitle,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isGhost) aura.copy(alpha = 0.7f) else aura
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = sig.personaTitle,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isGhost) aura.copy(alpha = 0.7f) else aura
+                                    )
+                                    if (isGhost) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFF1E293B))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "Призрак",
+                                                fontSize = 9.sp,
+                                                color = Color(0xFF94A3B8)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = "${sig.distanceMeters} м • ${sig.compatibilityPercent}%",
                                     fontSize = 11.sp,
@@ -1243,7 +1248,8 @@ fun TracesAndCapsulesTabView(
     onZoneSelect: (String) -> Unit,
     onCapsuleClick: (EchoTimeCapsule) -> Unit,
     onListenClick: (String, String) -> Unit,
-    onRemoveSaved: (SavedEchoTrack) -> Unit
+    onRemoveSaved: (SavedEchoTrack) -> Unit,
+    onExportPlaylist: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1351,13 +1357,36 @@ fun TracesAndCapsulesTabView(
             }
         }
 
+        // Блок находок с кнопкой «✦ Плейлист вечера»
         item {
-            Text(
-                text = "Сохраненные находки (${savedTracks.size})",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFE2E8F0)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Сохраненные находки (${savedTracks.size})",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFE2E8F0)
+                )
+                if (savedTracks.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF0284C7))
+                            .clickable { onExportPlaylist() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = "✦ Плейлист вечера",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
         }
         items(savedTracks) { item ->
             Card(
