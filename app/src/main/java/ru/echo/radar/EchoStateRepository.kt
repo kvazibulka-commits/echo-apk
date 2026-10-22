@@ -162,7 +162,6 @@ object EchoStateRepository {
     private val _liveCityZones = MutableStateFlow<List<CityZoneTrace>>(emptyList())
     val liveCityZones: StateFlow<List<CityZoneTrace>> = _liveCityZones.asStateFlow()
 
-    // Локальная очередь недавних треков устройства для передачи траектории вкуса на сервер
     private val localHistoryQueue = mutableListOf<String>()
 
     fun initLocalStore(context: Context) {
@@ -170,7 +169,6 @@ object EchoStateRepository {
         val p = context.getSharedPreferences("echo_radar_prefs", Context.MODE_PRIVATE)
         prefs = p
 
-        // Восстановление или создание постоянного уникального deviceId
         var savedDevId = p.getString("device_id", "") ?: ""
         if (savedDevId.isBlank()) {
             savedDevId = "echo_android_" + UUID.randomUUID().toString().replace("-", "").substring(0, 6)
@@ -178,23 +176,16 @@ object EchoStateRepository {
         }
         deviceId = savedDevId
 
-        // Восстановление IP сервера
         val savedIp = p.getString("server_ip", "") ?: ""
         if (savedIp.isNotBlank()) {
             serverHost = savedIp
         }
 
-        // Восстановление выбранной зоны
         val savedZone = p.getString("my_zone", "Вечерняя улица") ?: "Вечерняя улица"
         _myCurrentZone.value = savedZone
 
-        // Восстановление сохраненных треков
         loadSavedTracksFromPrefs(p)
-
-        // Запуск фонового UDP-автопоиска сервера
         startUdpDiscovery()
-
-        // Запуск периодической синхронизации по HTTP
         startServerSyncLoop()
     }
 
@@ -221,27 +212,39 @@ object EchoStateRepository {
     }
 
     fun updateDetectedMusic(artist: String, title: String, sourcePackage: String) {
-        val sName = when {
-            sourcePackage.contains("yandex") -> "Яндекс Музыка"
-            sourcePackage.contains("vk") -> "VK Музыка"
-            sourcePackage.contains("zvuk") -> "Звук"
-            sourcePackage.contains("spotify") -> "Spotify"
-            else -> "Плеер"
-        }
-        updateMyPlayingTrack(artist, title, sName)
+        updateMyPlayingTrack(artist = artist, title = title, sourcePackage = sourcePackage)
     }
 
-    fun updateMyPlayingTrack(artist: String, title: String, sourceName: String) {
+    fun updateMyPlayingTrack(
+        artist: String,
+        title: String,
+        sourcePackage: String = "",
+        sourceName: String = ""
+    ) {
         val cleanArtist = artist.trim().ifEmpty { "Неизвестный артист" }
         val cleanTitle = title.trim().ifEmpty { "Без названия" }
-        lastBaseSourceName = sourceName
+
+        val rawSource = when {
+            sourceName.isNotBlank() && !sourceName.contains(".") -> sourceName
+            sourcePackage.isNotBlank() -> sourcePackage
+            sourceName.isNotBlank() -> sourceName
+            else -> "Плеер"
+        }
+        val cleanSourceName = when {
+            rawSource.contains("yandex", ignoreCase = true) -> "Яндекс Музыка"
+            rawSource.contains("vk", ignoreCase = true) -> "VK Музыка"
+            rawSource.contains("zvuk", ignoreCase = true) || rawSource.contains("sber", ignoreCase = true) -> "Звук"
+            rawSource.contains("spotify", ignoreCase = true) -> "Spotify"
+            rawSource.contains(".") -> "Плеер"
+            else -> rawSource
+        }
+        lastBaseSourceName = cleanSourceName
 
         val cur = _myCurrentTrack.value
         if (cur.artist.equals(cleanArtist, ignoreCase = true) && cur.title.equals(cleanTitle, ignoreCase = true)) {
             return
         }
 
-        // Добавляем в историю недавних треков для ИИ-траектории вкуса
         val record = "$cleanArtist — $cleanTitle"
         synchronized(localHistoryQueue) {
             if (localHistoryQueue.lastOrNull() != record) {
@@ -255,11 +258,10 @@ object EchoStateRepository {
         _myCurrentTrack.value = cur.copy(
             artist = cleanArtist,
             title = cleanTitle,
-            sourceName = "$sourceName ●",
+            sourceName = "$cleanSourceName ●",
             zoneName = _myCurrentZone.value
         )
 
-        // Мгновенная отправка нового трека на сервер
         scope.launch {
             sendSignalToServer()
         }
@@ -350,11 +352,6 @@ object EchoStateRepository {
         }
     }
 
-    /**
-     * Механика «Собрать плейлист моего вечера»:
-     * Экспортирует все сохраненные находки вечерней прогулки в единый список для отправки
-     * или мгновенного поиска в плеере (Яндекс Музыка / VK).
-     */
     fun exportEveningPlaylist(context: Context) {
         val tracks = _savedTracks.value
         if (tracks.isEmpty()) {
@@ -445,7 +442,6 @@ object EchoStateRepository {
                 put("colorHex", cur.colorHex)
                 put("avatarPetals", cur.avatarPetals)
 
-                // Передаем недавние треки для анализа накопительной траектории вкуса
                 val histArr = JSONArray()
                 synchronized(localHistoryQueue) {
                     localHistoryQueue.forEach { histArr.put(it) }
