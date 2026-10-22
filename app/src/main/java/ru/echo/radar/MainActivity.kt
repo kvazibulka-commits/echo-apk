@@ -371,6 +371,7 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Вкладки интерфейса: Сонар, Карта города, Эфир, Следы и Тайники
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -455,6 +456,7 @@ fun EchoRadarApp() {
             }
         }
 
+        // Модальное окно паспорта слушателя
         selectedSignal?.let { signal ->
             VinylPassportDialog(
                 signal = signal,
@@ -478,6 +480,7 @@ fun EchoRadarApp() {
             )
         }
 
+        // Модальное окно тайника (с распознаванием локаций заведений)
         selectedCapsule?.let { capsule ->
             TimeCapsuleDialog(
                 capsule = capsule,
@@ -589,7 +592,7 @@ fun CityNightMapTabView(
             val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
             val mapScale = 240f * zoomScale
 
-            // Координатная сетка
+            // Ночная координатная сетка
             val gridSize = 70f * zoomScale
             var x = (center.x % gridSize)
             while (x < size.width) {
@@ -668,11 +671,10 @@ fun CityNightMapTabView(
                 signalPositions.add(sig to pos)
             }
 
-            // Нити резонанса между близкими по вкусу слушателями
+            // Нити резонанса между созвучными слушателями
             for (i in signalPositions.indices) {
                 val (s1, p1) = signalPositions[i]
                 if (s1.compatibilityPercent >= 78) {
-                    // Резонанс с центральным пользователем
                     drawLine(
                         color = Color(s1.colorHex).copy(alpha = 0.22f),
                         start = center,
@@ -725,26 +727,28 @@ fun CityNightMapTabView(
                 )
             }
 
-            // Тайники
+            // Отрисовка тайников на карте
             capsules.forEach { cap ->
+                val isVenue = cap.creatorId.startsWith("venue_")
                 val rad = cap.angleDegrees * (PI / 180.0)
                 val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
                 val pos = Offset(
                     x = center.x + (r * cos(rad)).toFloat(),
                     y = center.y + (r * sin(rad)).toFloat()
                 )
-                val capColor = Color(0xFFF59E0B)
+                val capColor = if (isVenue) Color(0xFF38BDF8) else Color(0xFFF59E0B)
 
                 drawCircle(
-                    color = capColor.copy(alpha = 0.20f),
-                    radius = 28f * zoomScale,
+                    color = capColor.copy(alpha = if (isVenue) 0.28f else 0.20f),
+                    radius = (if (isVenue) 32f else 28f) * zoomScale,
                     center = pos
                 )
                 val diamond = Path().apply {
-                    moveTo(pos.x, pos.y - 8f * zoomScale)
-                    lineTo(pos.x + 8f * zoomScale, pos.y)
-                    lineTo(pos.x, pos.y + 8f * zoomScale)
-                    lineTo(pos.x - 8f * zoomScale, pos.y)
+                    val sz = (if (isVenue) 10f else 8f) * zoomScale
+                    moveTo(pos.x, pos.y - sz)
+                    lineTo(pos.x + sz, pos.y)
+                    lineTo(pos.x, pos.y + sz)
+                    lineTo(pos.x - sz, pos.y)
                     close()
                 }
                 drawPath(diamond, capColor)
@@ -1038,30 +1042,34 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
+        // Отрисовка тайников (с выделением тайников заведений)
         capsules.forEach { cap ->
+            val isVenue = cap.creatorId.startsWith("venue_")
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
             val pos = Offset(
                 x = center.x + (r * cos(rad)).toFloat(),
                 y = center.y + (r * sin(rad)).toFloat()
             )
-            val capColor = if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFFF59E0B)
+            val capColor = if (isVenue) Color(0xFF38BDF8) else (if (cap.isUnlocked) Color(0xFFFBBF24) else Color(0xFFF59E0B))
 
             drawCircle(
                 color = capColor.copy(alpha = 0.22f * pulseFactor),
-                radius = 22f * pulseFactor,
+                radius = (if (isVenue) 26f else 22f) * pulseFactor,
                 center = pos
             )
             val diamond = Path().apply {
-                moveTo(pos.x, pos.y - 11f)
-                lineTo(pos.x + 11f, pos.y)
-                lineTo(pos.x, pos.y + 11f)
-                lineTo(pos.x - 11f, pos.y)
+                val dSize = if (isVenue) 13f else 11f
+                moveTo(pos.x, pos.y - dSize)
+                lineTo(pos.x + dSize, pos.y)
+                lineTo(pos.x, pos.y + dSize)
+                lineTo(pos.x - dSize, pos.y)
                 close()
             }
             drawPath(path = diamond, color = capColor)
         }
 
+        // Отрисовка сигналов с эффектом Sound Decay
         val nowMs = System.currentTimeMillis()
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
@@ -1394,12 +1402,17 @@ fun TracesAndCapsulesTabView(
             )
         }
         items(capsules, key = { it.id }) { cap ->
+            val isVenue = cap.creatorId.startsWith("venue_")
+            val cardColor = if (isVenue) Color(0xFF0A192F) else Color(0xFF1C1917)
+            val borderCol = if (isVenue) Color(0xFF0284C7).copy(alpha = 0.5f) else Color(0xFFF59E0B).copy(alpha = 0.4f)
+            val tagColor = if (isVenue) Color(0xFF38BDF8) else Color(0xFFFBBF24)
+
             Card(
                 shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1917)),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                    .border(1.dp, borderCol, RoundedCornerShape(14.dp))
                     .clickable { onCapsuleClick(cap) }
             ) {
                 Row(
@@ -1408,11 +1421,20 @@ fun TracesAndCapsulesTabView(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "⏳ ${cap.personaTitle} • ${cap.distanceMeters} м",
-                            fontSize = 11.sp,
-                            color = Color(0xFFFBBF24)
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (isVenue) "🏛️ ${cap.personaTitle}" else "⏳ ${cap.personaTitle}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = tagColor
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "• ${cap.distanceMeters} м",
+                                fontSize = 10.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
                         Text(
                             text = if (cap.isUnlocked) "${cap.artist} — ${cap.title}" else "Запечатанная капсула (${cap.moodLabel})",
                             fontSize = 14.sp,
@@ -1427,7 +1449,7 @@ fun TracesAndCapsulesTabView(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Text(text = "Открыть →", fontSize = 12.sp, color = Color(0xFFFBBF24))
+                    Text(text = "Открыть →", fontSize = 12.sp, color = tagColor)
                 }
             }
         }
@@ -1637,20 +1659,43 @@ fun TimeCapsuleDialog(
     onDismiss: () -> Unit,
     onListen: () -> Unit
 ) {
+    val isVenue = capsule.creatorId.startsWith("venue_")
+    val primaryColor = if (isVenue) Color(0xFF38BDF8) else Color(0xFFFBBF24)
+    val borderColor = if (isVenue) Color(0xFF0284C7) else Color(0xFFF59E0B)
+    val containerBg = if (isVenue) Color(0xFF0A192F) else Color(0xFF1C1917)
+    val promoBg = if (isVenue) Color(0xFF0C4A6E) else Color(0xFF292524)
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1917)),
+            colors = CardDefaults.cardColors(containerColor = containerBg),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(22.dp))
+                .border(1.5.dp, borderColor, RoundedCornerShape(22.dp))
         ) {
             Column(
                 modifier = Modifier.padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(text = "⏳ Музыкальный тайник", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24))
-                Text(text = "Зона: ${capsule.zoneName} • ${capsule.distanceMeters} м", fontSize = 12.sp, color = Color(0xFFA8A29E))
+                Text(
+                    text = if (isVenue) "🏛️ Тайник заведения" else "⏳ Музыкальный тайник",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = primaryColor
+                )
+                if (isVenue) {
+                    Text(
+                        text = capsule.personaTitle,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFBAE6FD)
+                    )
+                }
+                Text(
+                    text = "Зона: ${capsule.zoneName} • ${capsule.distanceMeters} м",
+                    fontSize = 12.sp,
+                    color = Color(0xFFA8A29E)
+                )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "${capsule.artist} — ${capsule.title}",
@@ -1659,17 +1704,32 @@ fun TimeCapsuleDialog(
                     color = Color(0xFFF8FAFC)
                 )
                 Text(
-                    text = "${capsule.personaTitle} (${capsule.moodLabel})",
+                    text = if (isVenue) "Саундтрек локации • ${capsule.moodLabel}" else "${capsule.personaTitle} (${capsule.moodLabel})",
                     fontSize = 12.sp,
-                    color = Color(0xFFFBBF24)
+                    color = primaryColor
                 )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = "Послание: «${capsule.secretMessage}»",
-                    fontSize = 13.sp,
-                    fontStyle = FontStyle.Italic,
-                    color = Color(0xFFE7E5E4)
-                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = promoBg),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = if (isVenue) "Послание и бонус гостям:" else "Послание нашедшему:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = primaryColor
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "«${capsule.secretMessage}»",
+                            fontSize = 13.sp,
+                            fontStyle = FontStyle.Italic,
+                            color = Color(0xFFE7E5E4)
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(onClick = onDismiss) {
@@ -1677,9 +1737,9 @@ fun TimeCapsuleDialog(
                     }
                     Button(
                         onClick = onListen,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                        colors = ButtonDefaults.buttonColors(containerColor = borderColor)
                     ) {
-                        Text("▶ Открыть в плеере", color = Color.White)
+                        Text("▶ В плеер", color = Color.White)
                     }
                 }
             }
