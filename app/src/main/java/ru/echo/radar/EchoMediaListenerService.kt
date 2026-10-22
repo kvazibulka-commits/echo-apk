@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.media.MediaMetadata
 import android.media.session.MediaController
-import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
@@ -16,6 +15,11 @@ class EchoMediaListenerService : NotificationListenerService() {
 
     private var sessionManager: MediaSessionManager? = null
     private val activeControllers = mutableListOf<MediaController>()
+    private val controllerCallbacks = mutableMapOf<MediaController, MediaController.Callback>()
+
+    private var lastReportedArtist: String = ""
+    private var lastReportedTitle: String = ""
+    private var lastReportedTimeMs: Long = 0L
 
     private val sessionListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
         bindControllers(controllers)
@@ -31,183 +35,185 @@ class EchoMediaListenerService : NotificationListenerService() {
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         EchoStateRepository.setListenerConnected(false)
-        clearControllers()
+        unbindAllControllers()
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        super.onNotificationPosted(sbn)
-        EchoStateRepository.setListenerConnected(true)
-        if (sbn != null) {
-            extractTrackFromNotification(sbn)
-        }
-        refreshSessionsSafe()
-    }
-
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
-        super.onNotificationRemoved(sbn)
-        refreshSessionsSafe()
+    override fun onDestroy() {
+        super.onDestroy()
+        unbindAllControllers()
+        try {
+            sessionManager?.removeOnActiveSessionsChangedListener(sessionListener)
+        } catch (_: Exception) {}
     }
 
     private fun setupMediaSessionMonitoring() {
         try {
-            val mgr = getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager ?: return
-            sessionManager = mgr
+            sessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
             val component = ComponentName(this, EchoMediaListenerService::class.java)
-            mgr.addOnActiveSessionsChangedListener(sessionListener, component)
-            bindControllers(mgr.getActiveSessions(component))
-        } catch (_: SecurityException) {
+            sessionManager?.addOnActiveSessionsChangedListener(sessionListener, component)
+            val initial = sessionManager?.getActiveSessions(component)
+            bindControllers(initial)
         } catch (_: Exception) {
+            // Резервный режим через сканирование шторки уведомлений
+            scanCurrentNotifications()
         }
     }
 
-    private fun refreshSessionsSafe() {
-        try {
-            val component = ComponentName(this, EchoMediaListenerService::class.java)
-            val controllers = sessionManager?.getActiveSessions(component)
-            if (!controllers.isNullOrEmpty()) {
-                bindControllers(controllers)
-            }
-        } catch (_: Exception) {
+    private fun bindControllers(controllers: List<MediaController>?) {
+        unbindAllControllers()
+        if (controllers.isNullOrEmpty()) {
+            scanCurrentNotifications()
+            return
         }
+
+        activeControllers.addAll(controllers)
+        for (controller in controllers) {
+            val callback = object : MediaController.Callback() {
+                override fun onMetadataChanged(metadata: MediaMetadata?) {
+                    readControllerMetadata(controller)
+                }
+
+                override fun onPlaybackStateChanged(state: PlaybackState?) {
+                    if (state?.state == PlaybackState.STATE_PLAYING) {
+                        readControllerMetadata(controller)
+                    }
+                }
+            }
+            try {
+                controller.registerCallback(callback)
+                controllerCallbacks[controller] = callback
+                readControllerMetadata(controller)
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun unbindAllControllers() {
+        for ((ctrl, cb) in controllerCallbacks) {
+            try {
+                ctrl.unregisterCallback(cb)
+            } catch (_: Exception) {}
+        }
+        controllerCallbacks.clear()
+        activeControllers.clear()
+    }
+
+    private fun readControllerMetadata(controller: MediaController) {
+        try {
+            val state = controller.playbackState
+            // Проверяем, что музыка действительно играет или буферизуется
+            val isPlaying = state != null && (
+                state.state == PlaybackState.STATE_PLAYING ||
+                state.state == PlaybackState.STATE_FAST_FORWARDING ||
+                state.state == PlaybackState.STATE_REWINDING
+            )
+
+            val meta = controller.metadata ?: return
+            val artist = meta.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: meta.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+                ?: meta.getString(MediaMetadata.METADATA_KEY_AUTHOR)
+                ?: ""
+
+            val title = meta.getString(MediaMetadata.METADATA_KEY_TITLE) ?: ""
+            val pkg = controller.packageName ?: ""
+
+            if (isPlaying && artist.isNotBlank() && title.isNotBlank()) {
+                publishTrackIfChanged(artist.trim(), title.trim(), pkg)
+            }
+        } catch (_: Exception) {}
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        super.onNotificationPosted(sbn)
+        if (sbn == null) return
+        extractTrackFromNotification(sbn)
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        super.onNotificationRemoved(sbn)
     }
 
     private fun scanCurrentNotifications() {
         try {
-            val list = activeNotifications ?: return
-            for (sbn in list) {
+            val active = activeNotifications ?: return
+            for (sbn in active) {
                 extractTrackFromNotification(sbn)
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     private fun extractTrackFromNotification(sbn: StatusBarNotification) {
-        val pkg = sbn.packageName ?: return
-        if (pkg == packageName || pkg == "android" || pkg.contains("systemui")) return
+        val n = sbn.notification ?: return
+        val extras = n.extras ?: return
+        val pkg = sbn.packageName ?: ""
 
-        val notif = sbn.notification ?: return
-        val extras = notif.extras ?: return
+        val isMusicCategory = n.category == Notification.CATEGORY_TRANSPORT
+        val hasMediaSession = extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
+        val isKnownApp = isKnownMusicApp(pkg)
 
-        // 1. Проверяем токен медиа-сессии внутри уведомления
-        val token = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, MediaSession.Token::class.java)
+        if (!isMusicCategory && !hasMediaSession && !isKnownApp) {
+            return
+        }
+
+        val rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim() ?: ""
+        val rawText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim() ?: ""
+
+        if (rawTitle.isBlank() && rawText.isBlank()) return
+
+        var artist = ""
+        var title = ""
+
+        if (rawTitle.isNotBlank() && rawText.isNotBlank()) {
+            // В большинстве плееров (Яндекс Музыка, VK): EXTRA_TITLE = Название трека, EXTRA_TEXT = Исполнитель
+            title = rawTitle
+            artist = rawText
         } else {
-            @Suppress("DEPRECATION")
-            extras.getParcelable(Notification.EXTRA_MEDIA_SESSION) as? MediaSession.Token
-        }
-
-        if (token != null) {
-            try {
-                val controller = MediaController(this, token)
-                if (readControllerMetadata(controller)) return
-            } catch (_: Exception) {
+            val full = if (rawTitle.isNotBlank()) rawTitle else rawText
+            val parts = full.split(" - ", " — ", " · ")
+            if (parts.size >= 2) {
+                artist = parts[0].trim()
+                title = parts[1].trim()
+            } else {
+                title = full
+                artist = "Неизвестный артист"
             }
         }
 
-        // 2. Прямое чтение заголовка и текста для медиа-уведомлений
-        val category = notif.category
-        val template = extras.getString(Notification.EXTRA_TEMPLATE) ?: ""
-        val isMediaStyle = category == Notification.CATEGORY_TRANSPORT ||
-            template.contains("MediaStyle", ignoreCase = true) ||
-            isKnownMusicApp(pkg)
-
-        if (!isMediaStyle) return
-
-        val rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
-        val rawText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
-        val rawSub = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()?.trim().orEmpty()
-
-        if (rawTitle.isNotEmpty() && rawText.isNotEmpty()) {
-            EchoStateRepository.updateMyPlayingTrack(
-                artist = rawText,
-                title = rawTitle,
-                sourcePackage = pkg
-            )
-        } else if (rawTitle.contains("—") || rawTitle.contains("-")) {
-            val parts = rawTitle.split("—", "-", limit = 2)
-            if (parts.size == 2) {
-                EchoStateRepository.updateMyPlayingTrack(
-                    artist = parts[0].trim(),
-                    title = parts[1].trim(),
-                    sourcePackage = pkg
-                )
-            }
-        } else if (rawTitle.isNotEmpty() && rawSub.isNotEmpty()) {
-            EchoStateRepository.updateMyPlayingTrack(
-                artist = rawSub,
-                title = rawTitle,
-                sourcePackage = pkg
-            )
+        if (artist.isNotBlank() && title.isNotBlank()) {
+            publishTrackIfChanged(artist, title, pkg)
         }
+    }
+
+    private fun publishTrackIfChanged(artist: String, title: String, sourcePackage: String) {
+        val now = System.currentTimeMillis()
+        // Дедупликация: предотвращаем отправку одинаковых треков чаще одного раза в 2.5 секунды
+        if (artist.equals(lastReportedArtist, ignoreCase = true) &&
+            title.equals(lastReportedTitle, ignoreCase = true) &&
+            (now - lastReportedTimeMs < 2500)
+        ) {
+            return
+        }
+
+        lastReportedArtist = artist
+        lastReportedTitle = title
+        lastReportedTimeMs = now
+
+        EchoStateRepository.updateMyPlayingTrack(
+            artist = artist,
+            title = title,
+            sourcePackage = sourcePackage
+        )
     }
 
     private fun isKnownMusicApp(pkg: String): Boolean {
-        val p = pkg.lowercase()
-        return p.contains("music") || p.contains("yandex") || p.contains("vkontakte") ||
-            p.contains("zvuk") || p.contains("sber") || p.contains("spotify") ||
-            p.contains("poweramp") || p.contains("aimp") || p.contains("player") ||
-            p.contains("youtube") || p.contains("audio")
-    }
-
-    private fun bindControllers(controllers: List<MediaController>?) {
-        clearControllers()
-        if (controllers.isNullOrEmpty()) return
-
-        for (controller in controllers) {
-            activeControllers.add(controller)
-            controller.registerCallback(controllerCallback)
-            readControllerMetadata(controller)
-        }
-    }
-
-    private val controllerCallback = object : MediaController.Callback() {
-        override fun onMetadataChanged(metadata: MediaMetadata?) {
-            refreshSessionsSafe()
-        }
-
-        override fun onPlaybackStateChanged(state: PlaybackState?) {
-            refreshSessionsSafe()
-        }
-    }
-
-    private fun readControllerMetadata(controller: MediaController): Boolean {
-        val metadata = controller.metadata ?: return false
-        val state = controller.playbackState?.state
-
-        val isActive = state == PlaybackState.STATE_PLAYING ||
-            state == PlaybackState.STATE_BUFFERING ||
-            state == PlaybackState.STATE_FAST_FORWARDING ||
-            state == null
-
-        if (!isActive) return false
-
-        val artist = metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_AUTHOR)
-            ?: ""
-
-        val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
-            ?: metadata.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
-            ?: ""
-
-        if (title.isNotBlank() || artist.isNotBlank()) {
-            EchoStateRepository.updateMyPlayingTrack(
-                artist = artist.ifBlank { "Неизвестный артист" },
-                title = title.ifBlank { "Неизвестный трек" },
-                sourcePackage = controller.packageName ?: "system"
-            )
-            return true
-        }
-        return false
-    }
-
-    private fun clearControllers() {
-        for (c in activeControllers) {
-            try {
-                c.unregisterCallback(controllerCallback)
-            } catch (_: Exception) {
-            }
-        }
-        activeControllers.clear()
+        val lower = pkg.lowercase()
+        return lower.contains("music") ||
+               lower.contains("audio") ||
+               lower.contains("yandex") ||
+               lower.contains("vk") ||
+               lower.contains("zvuk") ||
+               lower.contains("sber") ||
+               lower.contains("spotify") ||
+               lower.contains("deezer") ||
+               lower.contains("player")
     }
 }
