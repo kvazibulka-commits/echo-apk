@@ -64,6 +64,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -195,6 +196,20 @@ fun EchoRadarApp() {
     var showSettingsModal by remember { mutableStateOf(false) }
     var hasNotifPermission by remember { mutableStateOf(checkNotificationPermission(context)) }
 
+    // Карта отслеживания времени появления сигналов для плавного затухания (Sound Decay)
+    val signalTimestamps = remember { mutableStateMapOf<String, Long>() }
+
+    LaunchedEffect(nearbySignals) {
+        val now = System.currentTimeMillis()
+        nearbySignals.forEach { sig ->
+            if (!signalTimestamps.containsKey(sig.id)) {
+                signalTimestamps[sig.id] = now
+            }
+        }
+        val currentIds = nearbySignals.map { it.id }.toSet()
+        signalTimestamps.keys.retainAll(currentIds)
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             hasNotifPermission = checkNotificationPermission(context)
@@ -202,6 +217,7 @@ fun EchoRadarApp() {
         }
     }
 
+    // Авто-скрытие входящего импульса через 4.5 секунды
     LaunchedEffect(incomingBanner) {
         if (incomingBanner != null) {
             delay(4500)
@@ -227,7 +243,7 @@ fun EchoRadarApp() {
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // Верхняя панель
+            // Верхняя панель: статус, зона, кнопка настроек
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -282,6 +298,7 @@ fun EchoRadarApp() {
                 }
             }
 
+            // Предупреждение о доступе к шторке
             if (!hasNotifPermission) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(
@@ -316,6 +333,7 @@ fun EchoRadarApp() {
                 }
             }
 
+            // Входящий импульс-отклик с серверов / PWA
             AnimatedVisibility(
                 visible = incomingBanner != null,
                 enter = fadeIn(),
@@ -349,6 +367,7 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Виниловый паспорт текущего трека
             MyPassportHeaderCard(
                 myTrack = myTrack,
                 presenceEnabled = presenceEnabled,
@@ -390,12 +409,14 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Контент выбранной вкладки
             Box(modifier = Modifier.weight(1f)) {
                 when (selectedTab) {
                     0 -> SonarTabView(
                         myTrack = myTrack,
                         signals = nearbySignals,
                         capsules = nearbyCapsules,
+                        signalTimestamps = signalTimestamps,
                         onSignalClick = { selectedSignal = it },
                         onCapsuleClick = { selectedCapsule = it }
                     )
@@ -403,13 +424,17 @@ fun EchoRadarApp() {
                         myCurrentZone = myCurrentZone,
                         signals = nearbySignals,
                         capsules = nearbyCapsules,
+                        signalTimestamps = signalTimestamps,
                         onSignalClick = { selectedSignal = it },
                         onCapsuleClick = { selectedCapsule = it }
                     )
                     2 -> StreamSignalsTabView(
                         signals = nearbySignals,
                         onSignalClick = { selectedSignal = it },
-                        onReaction = { id, symbol -> EchoStateRepository.sendSymbolReaction(id, symbol) },
+                        onReaction = { id, symbol ->
+                            EchoStateRepository.sendSymbolReaction(id, symbol)
+                            Toast.makeText(context, "Импульс $symbol отправлен в эфир", Toast.LENGTH_SHORT).show()
+                        },
                         onSaveTrack = { signal ->
                             val added = EchoStateRepository.saveTrackToFinds(signal)
                             Toast.makeText(
@@ -435,13 +460,15 @@ fun EchoRadarApp() {
             }
         }
 
+        // Диалог паспорта слушателя
         selectedSignal?.let { signal ->
             VinylPassportDialog(
                 signal = signal,
                 onDismiss = { selectedSignal = null },
                 onReact = { symbol ->
                     EchoStateRepository.sendSymbolReaction(signal.id, symbol)
-                    Toast.makeText(context, "Отклик $symbol отправлен в эфир", Toast.LENGTH_SHORT).show()
+                    selectedSignal = null
+                    Toast.makeText(context, "Импульс $symbol отправлен", Toast.LENGTH_SHORT).show()
                 },
                 onSave = {
                     val saved = EchoStateRepository.saveTrackToFinds(signal)
@@ -457,6 +484,7 @@ fun EchoRadarApp() {
             )
         }
 
+        // Диалог тайника
         selectedCapsule?.let { capsule ->
             TimeCapsuleDialog(
                 capsule = capsule,
@@ -467,6 +495,7 @@ fun EchoRadarApp() {
             )
         }
 
+        // Диалог создания тайника
         if (showCapsuleCreator) {
             DropCapsuleDialog(
                 myTrack = myTrack,
@@ -480,6 +509,7 @@ fun EchoRadarApp() {
             )
         }
 
+        // Настройки
         if (showSettingsModal) {
             SettingsModalDialog(
                 currentZone = myCurrentZone,
@@ -511,6 +541,7 @@ fun CityNightMapTabView(
     myCurrentZone: String,
     signals: List<EchoTrackSignal>,
     capsules: List<EchoTimeCapsule>,
+    signalTimestamps: Map<String, Long>,
     onSignalClick: (EchoTrackSignal) -> Unit,
     onCapsuleClick: (EchoTimeCapsule) -> Unit
 ) {
@@ -594,7 +625,8 @@ fun CityNightMapTabView(
                 style = Stroke(width = 24f * zoomScale, cap = StrokeCap.Round)
             )
 
-            // Акустические ореолы сигналов слушателей (Sound Halos)
+            // Акустические ореолы с эффектом затухания (Sound Decay)
+            val nowMs = System.currentTimeMillis()
             signals.forEach { sig ->
                 val rad = sig.angleDegrees * (PI / 180.0)
                 val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
@@ -604,28 +636,32 @@ fun CityNightMapTabView(
                 )
                 val haloColor = Color(sig.colorHex)
 
-                // Рассеянный ореол радиусом ~180м
+                // Коэффициент затухания (в течение 15 минут угасает до 20%)
+                val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
+                val decayFactor = (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+
+                // Рассеянный ореол
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            haloColor.copy(alpha = 0.35f),
-                            haloColor.copy(alpha = 0.10f),
+                            haloColor.copy(alpha = 0.35f * decayFactor),
+                            haloColor.copy(alpha = 0.10f * decayFactor),
                             Color.Transparent
                         ),
                         center = pos,
-                        radius = 48f * zoomScale
+                        radius = (36f + 14f * decayFactor) * zoomScale
                     ),
-                    radius = 48f * zoomScale,
+                    radius = (36f + 14f * decayFactor) * zoomScale,
                     center = pos
                 )
                 // Виниловое ядро ореола
                 drawCircle(
-                    color = haloColor,
-                    radius = 7f * zoomScale,
+                    color = haloColor.copy(alpha = decayFactor),
+                    radius = (5f + 2f * decayFactor) * zoomScale,
                     center = pos
                 )
                 drawCircle(
-                    color = Color.White,
+                    color = Color.White.copy(alpha = decayFactor),
                     radius = 2.5f * zoomScale,
                     center = pos
                 )
@@ -656,7 +692,7 @@ fun CityNightMapTabView(
                 drawPath(diamond, capColor)
             }
 
-            // Текущее приблизительное присутствие
+            // Центр присутствия
             drawCircle(
                 color = Color(0xFF38BDF8).copy(alpha = 0.25f),
                 radius = 32f * zoomScale,
@@ -669,7 +705,6 @@ fun CityNightMapTabView(
             )
         }
 
-        // Подсказка и кнопка сброса позиции в углу карты
         Row(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -791,6 +826,7 @@ fun SonarTabView(
     myTrack: EchoTrackSignal,
     signals: List<EchoTrackSignal>,
     capsules: List<EchoTimeCapsule>,
+    signalTimestamps: Map<String, Long>,
     onSignalClick: (EchoTrackSignal) -> Unit,
     onCapsuleClick: (EchoTimeCapsule) -> Unit
 ) {
@@ -808,6 +844,7 @@ fun SonarTabView(
                 myTrack = myTrack,
                 signals = signals,
                 capsules = capsules,
+                signalTimestamps = signalTimestamps,
                 onSignalTap = onSignalClick,
                 onCapsuleTap = onCapsuleClick
             )
@@ -828,6 +865,7 @@ fun LiveSonarCanvas(
     myTrack: EchoTrackSignal,
     signals: List<EchoTrackSignal>,
     capsules: List<EchoTimeCapsule>,
+    signalTimestamps: Map<String, Long>,
     onSignalTap: (EchoTrackSignal) -> Unit,
     onCapsuleTap: (EchoTimeCapsule) -> Unit
 ) {
@@ -942,6 +980,7 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
+        // Отрисовка тайников
         capsules.forEach { cap ->
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
@@ -966,6 +1005,8 @@ fun LiveSonarCanvas(
             drawPath(path = diamond, color = capColor)
         }
 
+        // Отрисовка сигналов с постепенным затуханием (Sound Decay)
+        val nowMs = System.currentTimeMillis()
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
             val r = sig.distanceRatio.coerceIn(0.18f, 0.92f) * maxRadius
@@ -975,28 +1016,34 @@ fun LiveSonarCanvas(
             )
             val sigColor = Color(sig.colorHex)
 
-            if (sig.compatibilityPercent >= 75) {
+            // Затухание: свежие треки горят ярко (1.0), через 15 минут плавно угасают до (0.20)
+            val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
+            val decayFactor = (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+
+            if (sig.compatibilityPercent >= 75 && decayFactor > 0.4f) {
                 drawLine(
-                    color = sigColor.copy(alpha = 0.28f),
+                    color = sigColor.copy(alpha = 0.28f * decayFactor),
                     start = center,
                     end = pos,
                     strokeWidth = 1.5f
                 )
             }
 
+            // Мягкий световой ореол
             drawCircle(
-                color = sigColor.copy(alpha = 0.25f),
-                radius = 24f * pulseFactor,
+                color = sigColor.copy(alpha = 0.25f * decayFactor * pulseFactor),
+                radius = (16f + 8f * decayFactor) * pulseFactor,
+                center = pos
+            )
+            // Виниловое ядро
+            drawCircle(
+                color = sigColor.copy(alpha = decayFactor),
+                radius = (6f + 3f * decayFactor),
                 center = pos
             )
             drawCircle(
-                color = sigColor,
-                radius = 9f,
-                center = pos
-            )
-            drawCircle(
-                color = Color.White,
-                radius = 3.5f,
+                color = Color.White.copy(alpha = decayFactor),
+                radius = 2.5f + 1f * decayFactor,
                 center = pos
             )
         }
