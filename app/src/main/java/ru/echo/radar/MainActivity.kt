@@ -27,6 +27,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -225,7 +227,7 @@ fun EchoRadarApp() {
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // Верхняя панель: логотип, локация, статус эфира и кнопка настроек
+            // Верхняя панель
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -280,7 +282,6 @@ fun EchoRadarApp() {
                 }
             }
 
-            // Плашка предупреждения, если не выдан доступ к уведомлениям
             if (!hasNotifPermission) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(
@@ -305,7 +306,7 @@ fun EchoRadarApp() {
                                 fontSize = 13.sp
                             )
                             Text(
-                                text = "Нажмите, чтобы включить «ЭХО» в списке служб и транслировать музыку из Яндекс.Музыки / VK",
+                                text = "Нажмите, чтобы включить «ЭХО» для перехвата треков из Яндекс.Музыки / VK",
                                 color = Color(0xFFFECDD3),
                                 fontSize = 11.sp
                             )
@@ -315,7 +316,6 @@ fun EchoRadarApp() {
                 }
             }
 
-            // Входящий импульс-отклик
             AnimatedVisibility(
                 visible = incomingBanner != null,
                 enter = fadeIn(),
@@ -349,7 +349,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Моя текущая виниловая карточка-паспорт
             MyPassportHeaderCard(
                 myTrack = myTrack,
                 presenceEnabled = presenceEnabled,
@@ -358,7 +357,7 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Переключатель вкладок
+            // 4 вкладки: Сонар, Карта города, Эфир, Следы и Тайники
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -367,7 +366,7 @@ fun EchoRadarApp() {
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                val tabs = listOf("Сонар", "Эфир (${nearbySignals.size})", "Следы и Тайники")
+                val tabs = listOf("Сонар", "Карта", "Эфир (${nearbySignals.size})", "Тайники")
                 tabs.forEachIndexed { index, title ->
                     val active = selectedTab == index
                     Box(
@@ -381,7 +380,7 @@ fun EchoRadarApp() {
                     ) {
                         Text(
                             text = title,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                             color = if (active) Color(0xFF38BDF8) else Color(0xFF64748B)
                         )
@@ -391,7 +390,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Основной контент выбранной вкладки
             Box(modifier = Modifier.weight(1f)) {
                 when (selectedTab) {
                     0 -> SonarTabView(
@@ -401,7 +399,14 @@ fun EchoRadarApp() {
                         onSignalClick = { selectedSignal = it },
                         onCapsuleClick = { selectedCapsule = it }
                     )
-                    1 -> StreamSignalsTabView(
+                    1 -> CityNightMapTabView(
+                        myCurrentZone = myCurrentZone,
+                        signals = nearbySignals,
+                        capsules = nearbyCapsules,
+                        onSignalClick = { selectedSignal = it },
+                        onCapsuleClick = { selectedCapsule = it }
+                    )
+                    2 -> StreamSignalsTabView(
                         signals = nearbySignals,
                         onSignalClick = { selectedSignal = it },
                         onReaction = { id, symbol -> EchoStateRepository.sendSymbolReaction(id, symbol) },
@@ -415,7 +420,7 @@ fun EchoRadarApp() {
                         },
                         onListenClick = { artist, title -> launchPlayerSearch(context, artist, title) }
                     )
-                    2 -> TracesAndCapsulesTabView(
+                    3 -> TracesAndCapsulesTabView(
                         myCurrentZone = myCurrentZone,
                         liveZones = liveZones,
                         capsules = nearbyCapsules,
@@ -430,7 +435,6 @@ fun EchoRadarApp() {
             }
         }
 
-        // Модальное окно винилового паспорта слушателя
         selectedSignal?.let { signal ->
             VinylPassportDialog(
                 signal = signal,
@@ -453,7 +457,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Модальное окно музыкального тайника (капсулы времени)
         selectedCapsule?.let { capsule ->
             TimeCapsuleDialog(
                 capsule = capsule,
@@ -464,7 +467,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Модальное окно создания гео-тайника
         if (showCapsuleCreator) {
             DropCapsuleDialog(
                 myTrack = myTrack,
@@ -478,7 +480,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Модальное окно настроек (сервер, зоны, ручной тест, переподключение)
         if (showSettingsModal) {
             SettingsModalDialog(
                 currentZone = myCurrentZone,
@@ -502,6 +503,201 @@ fun EchoRadarApp() {
                 onDismiss = { showSettingsModal = false }
             )
         }
+    }
+}
+
+@Composable
+fun CityNightMapTabView(
+    myCurrentZone: String,
+    signals: List<EchoTrackSignal>,
+    capsules: List<EchoTimeCapsule>,
+    onSignalClick: (EchoTrackSignal) -> Unit,
+    onCapsuleClick: (EchoTimeCapsule) -> Unit
+) {
+    var panOffset by remember { mutableStateOf(Offset.Zero) }
+    var zoomScale by remember { mutableFloatStateOf(1.0f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF070A12))
+            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(18.dp))
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        zoomScale = (zoomScale * zoom).coerceIn(0.6f, 2.5f)
+                        panOffset += pan
+                    }
+                }
+                .pointerInput(signals, capsules, panOffset, zoomScale) {
+                    detectTapGestures { tapOffset ->
+                        val centerX = size.width / 2f + panOffset.x
+                        val centerY = size.height / 2f + panOffset.y
+                        val mapScale = 240f * zoomScale
+
+                        for (sig in signals) {
+                            val rad = sig.angleDegrees * (PI / 180.0)
+                            val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
+                            val sx = centerX + (r * cos(rad)).toFloat()
+                            val sy = centerY + (r * sin(rad)).toFloat()
+                            if (hypot(tapOffset.x - sx, tapOffset.y - sy) <= 45f * zoomScale) {
+                                onSignalClick(sig)
+                                return@detectTapGestures
+                            }
+                        }
+
+                        for (cap in capsules) {
+                            val rad = cap.angleDegrees * (PI / 180.0)
+                            val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
+                            val cx = centerX + (r * cos(rad)).toFloat()
+                            val cy = centerY + (r * sin(rad)).toFloat()
+                            if (hypot(tapOffset.x - cx, tapOffset.y - cy) <= 40f * zoomScale) {
+                                onCapsuleClick(cap)
+                                return@detectTapGestures
+                            }
+                        }
+                    }
+                }
+        ) {
+            val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
+            val mapScale = 240f * zoomScale
+
+            // Координатная сетка ночного атласа
+            val gridSize = 70f * zoomScale
+            var x = (center.x % gridSize)
+            while (x < size.width) {
+                drawLine(Color(0xFF111827), Offset(x, 0f), Offset(x, size.height), 1f)
+                x += gridSize
+            }
+            var y = (center.y % gridSize)
+            while (y < size.height) {
+                drawLine(Color(0xFF111827), Offset(0f, y), Offset(size.width, y), 1f)
+                y += gridSize
+            }
+
+            // Стилизованная лента реки (Москва-река)
+            val riverPath = Path().apply {
+                moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
+                cubicTo(
+                    center.x - 140f * zoomScale, center.y + 120f * zoomScale,
+                    center.x - 60f * zoomScale, center.y - 80f * zoomScale,
+                    center.x + 280f * zoomScale, center.y - 190f * zoomScale
+                )
+            }
+            drawPath(
+                path = riverPath,
+                color = Color(0xFF0C2438),
+                style = Stroke(width = 24f * zoomScale, cap = StrokeCap.Round)
+            )
+
+            // Акустические ореолы сигналов слушателей (Sound Halos)
+            signals.forEach { sig ->
+                val rad = sig.angleDegrees * (PI / 180.0)
+                val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
+                val pos = Offset(
+                    x = center.x + (r * cos(rad)).toFloat(),
+                    y = center.y + (r * sin(rad)).toFloat()
+                )
+                val haloColor = Color(sig.colorHex)
+
+                // Рассеянный ореол радиусом ~180м
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            haloColor.copy(alpha = 0.35f),
+                            haloColor.copy(alpha = 0.10f),
+                            Color.Transparent
+                        ),
+                        center = pos,
+                        radius = 48f * zoomScale
+                    ),
+                    radius = 48f * zoomScale,
+                    center = pos
+                )
+                // Виниловое ядро ореола
+                drawCircle(
+                    color = haloColor,
+                    radius = 7f * zoomScale,
+                    center = pos
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 2.5f * zoomScale,
+                    center = pos
+                )
+            }
+
+            // Музыкальные гео-тайники
+            capsules.forEach { cap ->
+                val rad = cap.angleDegrees * (PI / 180.0)
+                val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
+                val pos = Offset(
+                    x = center.x + (r * cos(rad)).toFloat(),
+                    y = center.y + (r * sin(rad)).toFloat()
+                )
+                val capColor = Color(0xFFF59E0B)
+
+                drawCircle(
+                    color = capColor.copy(alpha = 0.20f),
+                    radius = 28f * zoomScale,
+                    center = pos
+                )
+                val diamond = Path().apply {
+                    moveTo(pos.x, pos.y - 8f * zoomScale)
+                    lineTo(pos.x + 8f * zoomScale, pos.y)
+                    lineTo(pos.x, pos.y + 8f * zoomScale)
+                    lineTo(pos.x - 8f * zoomScale, pos.y)
+                    close()
+                }
+                drawPath(diamond, capColor)
+            }
+
+            // Текущее приблизительное присутствие
+            drawCircle(
+                color = Color(0xFF38BDF8).copy(alpha = 0.25f),
+                radius = 32f * zoomScale,
+                center = center
+            )
+            drawCircle(
+                color = Color(0xFF38BDF8),
+                radius = 8f * zoomScale,
+                center = center
+            )
+        }
+
+        // Подсказка и кнопка сброса позиции в углу карты
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF1E293B).copy(alpha = 0.9f))
+                    .clickable {
+                        panOffset = Offset.Zero
+                        zoomScale = 1.0f
+                    }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text(text = "🎯 Центр", fontSize = 11.sp, color = Color(0xFF38BDF8))
+            }
+        }
+
+        Text(
+            text = "Атлас города • $myCurrentZone",
+            fontSize = 11.sp,
+            color = Color(0xFF64748B),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp)
+        )
     }
 }
 
@@ -620,7 +816,7 @@ fun SonarTabView(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Коснитесь пульсирующей звезды слушателя или янтарного тайника на сонаре",
+            text = "Коснитесь звезды слушателя или янтарного тайника на сонаре",
             fontSize = 11.sp,
             color = Color(0xFF64748B)
         )
@@ -665,7 +861,6 @@ fun LiveSonarCanvas(
                     val centerY = size.height / 2f
                     val maxRadius = (minOf(size.width, size.height) / 2f) * 0.88f
 
-                    // Проверка нажатия на сигналы слушателей
                     for (sig in signals) {
                         val rad = sig.angleDegrees * (PI / 180.0)
                         val r = sig.distanceRatio.coerceIn(0.18f, 0.92f) * maxRadius
@@ -677,7 +872,6 @@ fun LiveSonarCanvas(
                         }
                     }
 
-                    // Проверка нажатия на гео-тайники
                     for (cap in capsules) {
                         val rad = cap.angleDegrees * (PI / 180.0)
                         val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
@@ -695,7 +889,6 @@ fun LiveSonarCanvas(
         val maxRadius = (minOf(size.width, size.height) / 2f) * 0.88f
         val myAura = Color(myTrack.colorHex)
 
-        // Глубокое атмосферное свечение сонара
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
@@ -710,9 +903,7 @@ fun LiveSonarCanvas(
             center = center
         )
 
-        // Концентрические кольца дистанции
-        val ringFractions = listOf(0.28f, 0.55f, 0.82f, 1.0f)
-        ringFractions.forEach { frac ->
+        listOf(0.28f, 0.55f, 0.82f, 1.0f).forEach { frac ->
             drawCircle(
                 color = Color(0xFF1E293B),
                 radius = maxRadius * frac,
@@ -721,7 +912,6 @@ fun LiveSonarCanvas(
             )
         }
 
-        // Оси координат сонара
         drawLine(
             color = Color(0xFF1E293B).copy(alpha = 0.6f),
             start = Offset(center.x - maxRadius, center.y),
@@ -735,7 +925,6 @@ fun LiveSonarCanvas(
             strokeWidth = 1f
         )
 
-        // Луч сканирования сонара
         val sweepRad = radarSweepAngle * (PI / 180.0)
         val sweepEnd = Offset(
             x = center.x + (maxRadius * cos(sweepRad)).toFloat(),
@@ -753,7 +942,6 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
-        // Отрисовка музыкальных тайников (янтарные кристаллы)
         capsules.forEach { cap ->
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
@@ -778,7 +966,6 @@ fun LiveSonarCanvas(
             drawPath(path = diamond, color = capColor)
         }
 
-        // Отрисовка сигналов слушателей поблизости
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
             val r = sig.distanceRatio.coerceIn(0.18f, 0.92f) * maxRadius
@@ -788,7 +975,6 @@ fun LiveSonarCanvas(
             )
             val sigColor = Color(sig.colorHex)
 
-            // Линия резонанса, если высокая совместимость
             if (sig.compatibilityPercent >= 75) {
                 drawLine(
                     color = sigColor.copy(alpha = 0.28f),
@@ -798,7 +984,6 @@ fun LiveSonarCanvas(
                 )
             }
 
-            // Аура сигнала
             drawCircle(
                 color = sigColor.copy(alpha = 0.25f),
                 radius = 24f * pulseFactor,
@@ -816,7 +1001,6 @@ fun LiveSonarCanvas(
             )
         }
 
-        // Центральное ядро (пользователь)
         drawCircle(
             color = myAura.copy(alpha = 0.3f),
             radius = 24f * pulseFactor,
@@ -842,7 +1026,6 @@ fun GenerativeAvatarView(
         val center = Offset(size.width / 2f, size.height / 2f)
         val radius = minOf(size.width, size.height) / 2f
 
-        // Виниловая подложка с аурой
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(baseColor.copy(alpha = 0.45f), Color(0xFF090D16)),
@@ -853,7 +1036,6 @@ fun GenerativeAvatarView(
             center = center
         )
 
-        // Генеративные лепестки архетипа
         for (i in 0 until safePetals) {
             val angle = (i * (360.0 / safePetals)) * (PI / 180.0)
             val petalCenter = Offset(
@@ -868,7 +1050,6 @@ fun GenerativeAvatarView(
             )
         }
 
-        // Центральное яблоко винила
         drawCircle(
             color = baseColor,
             radius = radius * 0.22f,
@@ -935,7 +1116,7 @@ fun StreamSignalsTabView(
                                     color = aura
                                 )
                                 Text(
-                                    text = "${sig.distanceMeters} м • ${sig.compatibilityPercent}% резонанс",
+                                    text = "${sig.distanceMeters} м • ${sig.compatibilityPercent}%",
                                     fontSize = 11.sp,
                                     color = Color(0xFF94A3B8)
                                 )
@@ -1024,7 +1205,6 @@ fun TracesAndCapsulesTabView(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Выбор городской зоны
         item {
             Text(
                 text = "Атмосфера городских зон",
@@ -1080,7 +1260,6 @@ fun TracesAndCapsulesTabView(
             }
         }
 
-        // Секция гео-тайников
         item {
             Text(
                 text = "Музыкальные тайники рядом (${capsules.size})",
@@ -1128,7 +1307,6 @@ fun TracesAndCapsulesTabView(
             }
         }
 
-        // Сохраненные находки
         item {
             Text(
                 text = "Сохраненные находки (${savedTracks.size})",
@@ -1179,7 +1357,6 @@ fun TracesAndCapsulesTabView(
             }
         }
 
-        // Вечерняя хроника пересечений
         item {
             Text(
                 text = "Хроника вечерних следов",
