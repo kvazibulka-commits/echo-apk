@@ -1,8 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Сетевые разрешения для HTTP/HTTPS синхронизации и UDP-автопоиска на порту 8888 -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- Разрешение видимости музыкальных плеер-приложений для Android 11+ (API 30+) -->
+    <queries>
+        <package android:name="ru.yandex.music" />
+        <package android:name="com.vkontakte.android" />
+        <package android:name="com.uma.musicvk" />
+        <package android:name="com.sberzvuk" />
+        <package android:name="com.spotify.music" />
+
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="yandexmusic" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="vk" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -11,24 +35,29 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
+        <!-- Главный экран: Сонар, Ночная карта, Эфир и Тайники -->
         <activity
-            android:name=".MainActivity"
-            android:exported="true">
+            android:name="ru.echo.radar.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!-- Фоновая служба перехвата медиа-сессий и музыкальных уведомлений -->
         <service
-            android:name=".EchoMediaListenerService"
-            android:exported="true"
-            android:label="ЭХО · Слушатель музыки"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            android:name="ru.echo.radar.EchoMediaListenerService"
+            android:label="ЭХО • Музыкальный сонар"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
 
     </application>
+
 </manifest>
