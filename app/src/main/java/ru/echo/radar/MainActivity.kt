@@ -1,6 +1,5 @@
 package ru.echo.radar
 
-import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -90,6 +89,14 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+
+private val ZONE_RELATIVE_OFFSETS = mapOf(
+    "Вечерняя улица" to Offset(0f, -40f),
+    "Сретенка · Камерные бары" to Offset(120f, -110f),
+    "Парк Горького · Набережная" to Offset(-130f, 170f),
+    "Покровка · Ночные кофейни" to Offset(150f, 60f),
+    "Северный лесопарк" to Offset(-110f, -240f)
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -202,7 +209,8 @@ fun EchoRadarApp() {
         val now = System.currentTimeMillis()
         nearbySignals.forEach { sig ->
             if (!signalTimestamps.containsKey(sig.id)) {
-                signalTimestamps[sig.id] = now
+                val initialTs = if (sig.updatedAt > 0L && sig.updatedAt <= now) sig.updatedAt else now
+                signalTimestamps[sig.id] = initialTs
             }
         }
         val currentIds = nearbySignals.map { it.id }.toSet()
@@ -241,7 +249,6 @@ fun EchoRadarApp() {
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // Верхняя панель
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -371,7 +378,6 @@ fun EchoRadarApp() {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Вкладки интерфейса: Сонар, Карта города, Эфир, Следы и Тайники
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -456,8 +462,10 @@ fun EchoRadarApp() {
             }
         }
 
-        // Модальное окно паспорта слушателя
         selectedSignal?.let { signal ->
+            LaunchedEffect(signal.id) {
+                EchoStateRepository.bumpEncounter(signal.id)
+            }
             VinylPassportDialog(
                 signal = signal,
                 onDismiss = { selectedSignal = null },
@@ -480,7 +488,6 @@ fun EchoRadarApp() {
             )
         }
 
-        // Модальное окно тайника (с распознаванием локаций заведений)
         selectedCapsule?.let { capsule ->
             TimeCapsuleDialog(
                 capsule = capsule,
@@ -511,10 +518,14 @@ fun EchoRadarApp() {
                 onZoneChange = { EchoStateRepository.setMyZone(it) },
                 onSaveServerIp = { ip ->
                     EchoStateRepository.setCustomServerIp(ip)
-                    Toast.makeText(context, "IP сервера обновлен", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Адрес сервера сохранен: $ip", Toast.LENGTH_SHORT).show()
                 },
                 onSimulateTrack = { artist, title ->
-                    EchoStateRepository.updateMyPlayingTrack(artist, title, "ru.yandex.music")
+                    EchoStateRepository.updateMyPlayingTrack(
+                        artist = artist,
+                        title = title,
+                        sourcePackage = "ru.yandex.music"
+                    )
                     Toast.makeText(context, "Тестовый сигнал отправлен в эфир", Toast.LENGTH_SHORT).show()
                 },
                 onRebindService = {
@@ -542,6 +553,7 @@ fun CityNightMapTabView(
 ) {
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var zoomScale by remember { mutableFloatStateOf(1.0f) }
+    val reusablePath = remember { Path() }
 
     Box(
         modifier = Modifier
@@ -592,61 +604,45 @@ fun CityNightMapTabView(
             val center = Offset(size.width / 2f + panOffset.x, size.height / 2f + panOffset.y)
             val mapScale = 240f * zoomScale
 
-            // Ночная координатная сетка
             val gridSize = 70f * zoomScale
             var x = (center.x % gridSize)
+            if (x < 0f) x += gridSize
             while (x < size.width) {
                 drawLine(Color(0xFF111827), Offset(x, 0f), Offset(x, size.height), 1f)
                 x += gridSize
             }
             var y = (center.y % gridSize)
+            if (y < 0f) y += gridSize
             while (y < size.height) {
                 drawLine(Color(0xFF111827), Offset(0f, y), Offset(size.width, y), 1f)
                 y += gridSize
             }
 
-            // Ночная Москва-река
-            val riverPath = Path().apply {
-                moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
-                cubicTo(
-                    center.x - 140f * zoomScale, center.y + 120f * zoomScale,
-                    center.x - 60f * zoomScale, center.y - 80f * zoomScale,
-                    center.x + 280f * zoomScale, center.y - 190f * zoomScale
-                )
-            }
+            reusablePath.reset()
+            reusablePath.moveTo(center.x - 380f * zoomScale, center.y + 220f * zoomScale)
+            reusablePath.cubicTo(
+                center.x - 140f * zoomScale, center.y + 120f * zoomScale,
+                center.x - 60f * zoomScale, center.y - 80f * zoomScale,
+                center.x + 280f * zoomScale, center.y - 190f * zoomScale
+            )
             drawPath(
-                path = riverPath,
+                path = reusablePath,
                 color = Color(0xFF0C2438),
                 style = Stroke(width = 24f * zoomScale, cap = StrokeCap.Round)
             )
 
             // Звуковой туман кварталов (Ambient Audio Fog)
-            val zoneRelativeOffsets = mapOf(
-                "Вечерняя улица" to Offset(0f, -40f),
-                "Сретенка · Камерные бары" to Offset(120f, -110f),
-                "Парк Горького · Набережная" to Offset(-130f, 170f),
-                "Покровка · Ночные кофейни" to Offset(150f, 60f),
-                "Северный лесопарк" to Offset(-110f, -240f)
-            )
-            val zoneColors = mapOf(
-                "Вечерняя улица" to Color(0xFF38BDF8),
-                "Сретенка · Камерные бары" to Color(0xFFA855F7),
-                "Парк Горького · Набережная" to Color(0xFF34D399),
-                "Покровка · Ночные кофейни" to Color(0xFFFBBF24),
-                "Северный лесопарк" to Color(0xFF818CF8)
-            )
-
             liveZones.forEach { z ->
-                val baseOff = zoneRelativeOffsets[z.placeName] ?: Offset.Zero
+                val baseOff = ZONE_RELATIVE_OFFSETS[z.placeName] ?: Offset.Zero
                 val fogCenter = Offset(center.x + baseOff.x * zoomScale, center.y + baseOff.y * zoomScale)
-                val fogCol = zoneColors[z.placeName] ?: Color(0xFF38BDF8)
-                val fogRadius = (100f + (z.listenersCount.coerceIn(1, 10) * 12f)) * zoomScale
+                val fogCol = Color(z.fogColorHex)
+                val fogRadius = ((z.fogRadius.coerceIn(350, 800) / 4.2f) + (z.listenersCount.coerceIn(1, 12) * 6f)) * zoomScale
 
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            fogCol.copy(alpha = 0.12f),
-                            fogCol.copy(alpha = 0.04f),
+                            fogCol.copy(alpha = 0.14f),
+                            fogCol.copy(alpha = 0.05f),
                             Color.Transparent
                         ),
                         center = fogCenter,
@@ -657,24 +653,17 @@ fun CityNightMapTabView(
                 )
             }
 
-            // Вычисление экранных позиций сигналов
-            val nowMs = System.currentTimeMillis()
-            val signalPositions = mutableListOf<Pair<EchoTrackSignal, Offset>>()
-
-            signals.forEach { sig ->
-                val rad = sig.angleDegrees * (PI / 180.0)
-                val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
-                val pos = Offset(
-                    x = center.x + (r * cos(rad)).toFloat(),
-                    y = center.y + (r * sin(rad)).toFloat()
+            // Нити резонанса между близкими по вкусу слушателями
+            for (i in signals.indices) {
+                val s1 = signals[i]
+                val rad1 = s1.angleDegrees * (PI / 180.0)
+                val r1 = s1.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
+                val p1 = Offset(
+                    x = center.x + (r1 * cos(rad1)).toFloat(),
+                    y = center.y + (r1 * sin(rad1)).toFloat()
                 )
-                signalPositions.add(sig to pos)
-            }
 
-            // Нити резонанса между созвучными слушателями
-            for (i in signalPositions.indices) {
-                val (s1, p1) = signalPositions[i]
-                if (s1.compatibilityPercent >= 78) {
+                if (s1.compatibilityPercent >= 78 && !s1.isGhost) {
                     drawLine(
                         color = Color(s1.colorHex).copy(alpha = 0.22f),
                         start = center,
@@ -682,9 +671,16 @@ fun CityNightMapTabView(
                         strokeWidth = 1.2f * zoomScale
                     )
                 }
-                for (j in i + 1 until signalPositions.size) {
-                    val (s2, p2) = signalPositions[j]
-                    if (s1.compatibilityPercent >= 80 && s2.compatibilityPercent >= 80) {
+
+                for (j in i + 1 until signals.size) {
+                    val s2 = signals[j]
+                    if (s1.compatibilityPercent >= 80 && s2.compatibilityPercent >= 80 && !s1.isGhost && !s2.isGhost) {
+                        val rad2 = s2.angleDegrees * (PI / 180.0)
+                        val r2 = s2.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
+                        val p2 = Offset(
+                            x = center.x + (r2 * cos(rad2)).toFloat(),
+                            y = center.y + (r2 * sin(rad2)).toFloat()
+                        )
                         drawLine(
                             color = Color(0xFFA855F7).copy(alpha = 0.18f),
                             start = p1,
@@ -695,12 +691,18 @@ fun CityNightMapTabView(
                 }
             }
 
-            // Отрисовка акустических ореолов (Sound Halos)
-            signalPositions.forEach { (sig, pos) ->
+            // Отрисовка акустических ореолов (Sound Halos) с эффектом Sound Decay
+            val nowMs = System.currentTimeMillis()
+            signals.forEach { sig ->
+                val rad = sig.angleDegrees * (PI / 180.0)
+                val r = sig.distanceRatio.coerceIn(0.2f, 0.95f) * mapScale
+                val pos = Offset(
+                    x = center.x + (r * cos(rad)).toFloat(),
+                    y = center.y + (r * sin(rad)).toFloat()
+                )
                 val haloColor = Color(sig.colorHex)
-                val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
                 val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
-                val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+                val decayFactor = if (sig.isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
                 drawCircle(
                     brush = Brush.radialGradient(
@@ -727,9 +729,9 @@ fun CityNightMapTabView(
                 )
             }
 
-            // Отрисовка тайников на карте
+            // Тайники и B2B-локации
             capsules.forEach { cap ->
-                val isVenue = cap.creatorId.startsWith("venue_")
+                val isVenue = cap.isVenue
                 val rad = cap.angleDegrees * (PI / 180.0)
                 val r = cap.distanceRatio.coerceIn(0.25f, 0.9f) * mapScale
                 val pos = Offset(
@@ -743,15 +745,14 @@ fun CityNightMapTabView(
                     radius = (if (isVenue) 32f else 28f) * zoomScale,
                     center = pos
                 )
-                val diamond = Path().apply {
-                    val sz = (if (isVenue) 10f else 8f) * zoomScale
-                    moveTo(pos.x, pos.y - sz)
-                    lineTo(pos.x + sz, pos.y)
-                    lineTo(pos.x, pos.y + sz)
-                    lineTo(pos.x - sz, pos.y)
-                    close()
-                }
-                drawPath(diamond, capColor)
+                val sz = (if (isVenue) 10f else 8f) * zoomScale
+                reusablePath.reset()
+                reusablePath.moveTo(pos.x, pos.y - sz)
+                reusablePath.lineTo(pos.x + sz, pos.y)
+                reusablePath.lineTo(pos.x, pos.y + sz)
+                reusablePath.lineTo(pos.x - sz, pos.y)
+                reusablePath.close()
+                drawPath(reusablePath, capColor)
             }
 
             // Центр присутствия
@@ -915,7 +916,7 @@ fun SonarTabView(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Коснитесь звезды слушателя или янтарного тайника на сонаре",
+            text = "Коснитесь звезды слушателя или кристалла тайника на сонаре",
             fontSize = 11.sp,
             color = Color(0xFF64748B)
         )
@@ -931,6 +932,7 @@ fun LiveSonarCanvas(
     onSignalTap: (EchoTrackSignal) -> Unit,
     onCapsuleTap: (EchoTimeCapsule) -> Unit
 ) {
+    val reusablePath = remember { Path() }
     val infiniteTransition = rememberInfiniteTransition(label = "sonar_transition")
     val radarSweepAngle by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -1042,9 +1044,8 @@ fun LiveSonarCanvas(
             cap = StrokeCap.Round
         )
 
-        // Отрисовка тайников (с выделением тайников заведений)
         capsules.forEach { cap ->
-            val isVenue = cap.creatorId.startsWith("venue_")
+            val isVenue = cap.isVenue
             val rad = cap.angleDegrees * (PI / 180.0)
             val r = cap.distanceRatio.coerceIn(0.22f, 0.90f) * maxRadius
             val pos = Offset(
@@ -1058,18 +1059,16 @@ fun LiveSonarCanvas(
                 radius = (if (isVenue) 26f else 22f) * pulseFactor,
                 center = pos
             )
-            val diamond = Path().apply {
-                val dSize = if (isVenue) 13f else 11f
-                moveTo(pos.x, pos.y - dSize)
-                lineTo(pos.x + dSize, pos.y)
-                lineTo(pos.x, pos.y + dSize)
-                lineTo(pos.x - dSize, pos.y)
-                close()
-            }
-            drawPath(path = diamond, color = capColor)
+            val dSize = if (isVenue) 13f else 11f
+            reusablePath.reset()
+            reusablePath.moveTo(pos.x, pos.y - dSize)
+            reusablePath.lineTo(pos.x + dSize, pos.y)
+            reusablePath.lineTo(pos.x, pos.y + dSize)
+            reusablePath.lineTo(pos.x - dSize, pos.y)
+            reusablePath.close()
+            drawPath(path = reusablePath, color = capColor)
         }
 
-        // Отрисовка сигналов с эффектом Sound Decay
         val nowMs = System.currentTimeMillis()
         signals.forEach { sig ->
             val rad = sig.angleDegrees * (PI / 180.0)
@@ -1080,11 +1079,10 @@ fun LiveSonarCanvas(
             )
             val sigColor = Color(sig.colorHex)
 
-            val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
             val ageMs = nowMs - (signalTimestamps[sig.id] ?: nowMs)
-            val decayFactor = if (isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
+            val decayFactor = if (sig.isGhost) 0.35f else (1f - (ageMs / 900000f) * 0.8f).coerceIn(0.20f, 1f)
 
-            if (sig.compatibilityPercent >= 75 && decayFactor > 0.4f) {
+            if (sig.compatibilityPercent >= 75 && decayFactor > 0.4f && !sig.isGhost) {
                 drawLine(
                     color = sigColor.copy(alpha = 0.28f * decayFactor),
                     start = center,
@@ -1196,7 +1194,7 @@ fun StreamSignalsTabView(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(signals, key = { it.id }) { sig ->
-            val isGhost = sig.moodLabel.contains("Призрачный") || sig.personaObservation.contains("Призрачный")
+            val isGhost = sig.isGhost
             val aura = Color(sig.colorHex)
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -1402,10 +1400,11 @@ fun TracesAndCapsulesTabView(
             )
         }
         items(capsules, key = { it.id }) { cap ->
-            val isVenue = cap.creatorId.startsWith("venue_")
+            val isVenue = cap.isVenue
             val cardColor = if (isVenue) Color(0xFF0A192F) else Color(0xFF1C1917)
             val borderCol = if (isVenue) Color(0xFF0284C7).copy(alpha = 0.5f) else Color(0xFFF59E0B).copy(alpha = 0.4f)
             val tagColor = if (isVenue) Color(0xFF38BDF8) else Color(0xFFFBBF24)
+            val displayVenue = if (isVenue && cap.venueName.isNotBlank()) cap.venueName else cap.personaTitle
 
             Card(
                 shape = RoundedCornerShape(14.dp),
@@ -1423,7 +1422,7 @@ fun TracesAndCapsulesTabView(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = if (isVenue) "🏛️ ${cap.personaTitle}" else "⏳ ${cap.personaTitle}",
+                                text = if (isVenue) "🏛️ $displayVenue" else "⏳ ${cap.personaTitle}",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = tagColor
@@ -1659,11 +1658,12 @@ fun TimeCapsuleDialog(
     onDismiss: () -> Unit,
     onListen: () -> Unit
 ) {
-    val isVenue = capsule.creatorId.startsWith("venue_")
+    val isVenue = capsule.isVenue
     val primaryColor = if (isVenue) Color(0xFF38BDF8) else Color(0xFFFBBF24)
     val borderColor = if (isVenue) Color(0xFF0284C7) else Color(0xFFF59E0B)
     val containerBg = if (isVenue) Color(0xFF0A192F) else Color(0xFF1C1917)
     val promoBg = if (isVenue) Color(0xFF0C4A6E) else Color(0xFF292524)
+    val displayTitle = if (isVenue && capsule.venueName.isNotBlank()) capsule.venueName else capsule.personaTitle
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -1685,7 +1685,7 @@ fun TimeCapsuleDialog(
                 )
                 if (isVenue) {
                     Text(
-                        text = capsule.personaTitle,
+                        text = displayTitle,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xFFBAE6FD)
@@ -1818,7 +1818,7 @@ fun SettingsModalDialog(
     onOpenSystemNotificationSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var serverIpInput by remember { mutableStateOf("") }
+    var serverIpInput by remember { mutableStateOf(EchoStateRepository.serverHost) }
     var testArtist by remember { mutableStateOf("Кино") }
     var testTitle by remember { mutableStateOf("Спокойная ночь") }
 
@@ -1837,7 +1837,11 @@ fun SettingsModalDialog(
                 )
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Text(text = "Локальный / облачный сервер (UDP-автопоиск активен):", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                Text(
+                    text = "Сервер (LAN IP:8080 или домен trycloudflare.com):",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -1845,8 +1849,12 @@ fun SettingsModalDialog(
                     OutlinedTextField(
                         value = serverIpInput,
                         onValueChange = { serverIpInput = it },
-                        placeholder = { Text("Например: 192.168.1.45:8080") },
+                        placeholder = { Text("172.16.0.2:8080 или xxxx.trycloudflare.com") },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1885,6 +1893,10 @@ fun SettingsModalDialog(
                         onValueChange = { testArtist = it },
                         label = { Text("Артист") },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
@@ -1892,6 +1904,10 @@ fun SettingsModalDialog(
                         onValueChange = { testTitle = it },
                         label = { Text("Трек") },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                 }
