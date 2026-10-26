@@ -1,41 +1,52 @@
-name: Build Echo APK
+name: Build Echo Radar APK
 
 on:
   push:
     branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build-android:
+  build-android-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout code
+      - name: 1. Выгрузка исходного кода
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: 2. Установка JDK 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: 3. Настройка Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 4. Настройка и кэширование Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+          cache-read-only: false
 
-      - name: Cache Fixed Debug Keystore
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: echo-fixed-debug-keystore-v1
+      - name: 5. Сборка Debug APK
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
-
-      - name: Upload APK Artifact
+      - name: 6. Публикация готового APK в Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: echo-bluestacks-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          name: echo-radar-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
