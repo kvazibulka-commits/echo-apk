@@ -3,7 +3,6 @@ package ru.echo.radar
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.net.Uri
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +13,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -28,6 +29,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 data class EchoTrackSignal(
     val id: String,
@@ -46,7 +48,12 @@ data class EchoTrackSignal(
     val colorHex: Long = 0xFF38BDF8,
     val avatarPetals: Int = 6,
     val zoneName: String = "Вечерняя улица",
-    val reactions: Map<String, Int> = emptyMap()
+    val reactions: Map<String, Int> = emptyMap(),
+    val isGhost: Boolean = false,
+    val ageMinutes: Int = 0,
+    val lat: Double = 55.7602,
+    val lon: Double = 37.6185,
+    val updatedAt: Long = 0L
 )
 
 data class EchoTimeCapsule(
@@ -62,7 +69,11 @@ data class EchoTimeCapsule(
     val angleDegrees: Float = 120f,
     val distanceRatio: Float = 0.5f,
     val compatibilityPercent: Int = 90,
-    val isUnlocked: Boolean = true
+    val isUnlocked: Boolean = true,
+    val isVenue: Boolean = false,
+    val venueName: String = "",
+    val lat: Double = 55.7602,
+    val lon: Double = 37.6185
 )
 
 data class SavedEchoTrack(
@@ -83,7 +94,11 @@ data class CityZoneTrace(
     val placeName: String,
     val dominantVibe: String,
     val recentArtists: String,
-    val listenersCount: Int
+    val listenersCount: Int,
+    val fogColorHex: Long = 0xFF38BDF8,
+    val fogRadius: Int = 500,
+    val lat: Double = 55.7602,
+    val lon: Double = 37.6185
 )
 
 data class CuratedPersona(
@@ -97,13 +112,25 @@ data class CuratedPersona(
 
 object EchoStateRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncMutex = Mutex()
     private var prefs: SharedPreferences? = null
 
+    @Volatile
     var deviceId: String = "echo_android_init"
         private set
 
+    @Volatile
     var serverHost: String = "172.16.0.2:8080"
         private set
+
+    @Volatile
+    private var isCustomHostPinned: Boolean = false
+
+    @Volatile
+    private var isFirstSyncCompleted: Boolean = false
+
+    @Volatile
+    private var lastHandledBannerId: Long = 0L
 
     private var lastBaseSourceName: String = "ЭХО"
 
@@ -163,6 +190,28 @@ object EchoStateRepository {
     val liveCityZones: StateFlow<List<CityZoneTrace>> = _liveCityZones.asStateFlow()
 
     private val localHistoryQueue = mutableListOf<String>()
+    private val bumpedTargetsSession = ConcurrentHashMap.newKeySet<String>()
+
+    private fun ensureOpaqueColor(rawColor: Long): Long {
+        val rgb = rawColor and 0x00FFFFFFL
+        return if (rgb == 0L) 0xFF38BDF8L else (rgb or 0xFF000000L)
+    }
+
+    private fun buildEndpointUrl(path: String): URL {
+        val rawHost = serverHost.trim().removeSuffix("/")
+        val cleanPath = if (path.startsWith("/")) path else "/$path"
+
+        val baseUrl = when {
+            rawHost.startsWith("https://", ignoreCase = true) ||
+            rawHost.startsWith("http://", ignoreCase = true) -> rawHost
+            rawHost.contains("trycloudflare.com", ignoreCase = true) ||
+            rawHost.contains("ngrok", ignoreCase = true) ||
+            rawHost.contains("loca.lt", ignoreCase = true) ||
+            (!rawHost.contains(":") && rawHost.any { it.isLetter() }) -> "https://$rawHost"
+            else -> "http://$rawHost"
+        }
+        return URL("$baseUrl$cleanPath")
+    }
 
     fun initLocalStore(context: Context) {
         if (prefs != null) return
@@ -175,10 +224,12 @@ object EchoStateRepository {
             p.edit().putString("device_id", savedDevId).apply()
         }
         deviceId = savedDevId
+        _myCurrentTrack.value = _myCurrentTrack.value.copy(id = savedDevId)
 
         val savedIp = p.getString("server_ip", "") ?: ""
         if (savedIp.isNotBlank()) {
             serverHost = savedIp
+            isCustomHostPinned = savedIp.contains("trycloudflare.com", ignoreCase = true)
         }
 
         val savedZone = p.getString("my_zone", "Вечерняя улица") ?: "Вечерняя улица"
@@ -199,12 +250,19 @@ object EchoStateRepository {
 
     fun setMyZone(zone: String) {
         _myCurrentZone.value = zone
+        _myCurrentTrack.value = _myCurrentTrack.value.copy(zoneName = zone)
         prefs?.edit()?.putString("my_zone", zone)?.apply()
+        scope.launch { sendSignalToServer() }
     }
 
     fun setCustomServerIp(ip: String) {
-        serverHost = ip.trim()
+        val cleaned = ip.trim().removeSuffix("/")
+        if (cleaned.isBlank()) return
+        serverHost = cleaned
+        isCustomHostPinned = cleaned.contains("trycloudflare.com", ignoreCase = true) ||
+                             cleaned.startsWith("https://", ignoreCase = true)
         prefs?.edit()?.putString("server_ip", serverHost)?.apply()
+        scope.launch { sendSignalToServer() }
     }
 
     fun dismissBanner() {
@@ -241,7 +299,9 @@ object EchoStateRepository {
         lastBaseSourceName = cleanSourceName
 
         val cur = _myCurrentTrack.value
-        if (cur.artist.equals(cleanArtist, ignoreCase = true) && cur.title.equals(cleanTitle, ignoreCase = true)) {
+        if (cur.artist.equals(cleanArtist, ignoreCase = true) &&
+            cur.title.equals(cleanTitle, ignoreCase = true)
+        ) {
             return
         }
 
@@ -256,6 +316,7 @@ object EchoStateRepository {
         }
 
         _myCurrentTrack.value = cur.copy(
+            id = deviceId,
             artist = cleanArtist,
             title = cleanTitle,
             sourceName = "$cleanSourceName ●",
@@ -296,59 +357,40 @@ object EchoStateRepository {
         saveSavedTracksToPrefs()
     }
 
+    fun bumpEncounter(targetId: String) {
+        if (targetId.isBlank() || targetId == deviceId) return
+        if (!bumpedTargetsSession.add(targetId)) return
+
+        scope.launch {
+            postJsonToServer("/api/bump_encounter", JSONObject().apply {
+                put("targetId", targetId)
+                put("senderId", deviceId)
+            })
+        }
+    }
+
     fun sendSymbolReaction(targetId: String, symbol: String) {
         scope.launch {
-            try {
-                val url = URL("http://$serverHost/api/react")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 3000
-                    readTimeout = 3000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                }
-                val body = JSONObject().apply {
-                    put("targetId", targetId)
-                    put("symbol", symbol)
-                }
-                OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()) }
-                if (conn.responseCode == 200) {
-                    val resp = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    handleServerResponse(JSONObject(resp))
-                }
-                conn.disconnect()
-            } catch (_: Exception) {}
+            postJsonToServer("/api/react", JSONObject().apply {
+                put("targetId", targetId)
+                put("senderId", deviceId)
+                put("symbol", symbol)
+            })
         }
     }
 
     fun dropTimeCapsule(secretMessage: String) {
         val cur = _myCurrentTrack.value
         scope.launch {
-            try {
-                val url = URL("http://$serverHost/api/drop_capsule")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 3500
-                    readTimeout = 3500
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                }
-                val body = JSONObject().apply {
-                    put("creatorId", deviceId)
-                    put("artist", cur.artist)
-                    put("title", cur.title)
-                    put("moodLabel", cur.moodLabel)
-                    put("personaTitle", cur.personaTitle)
-                    put("zoneName", _myCurrentZone.value)
-                    put("secretMessage", secretMessage)
-                }
-                OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()) }
-                if (conn.responseCode == 200) {
-                    val resp = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    handleServerResponse(JSONObject(resp))
-                }
-                conn.disconnect()
-            } catch (_: Exception) {}
+            postJsonToServer("/api/drop_capsule", JSONObject().apply {
+                put("creatorId", deviceId)
+                put("artist", cur.artist)
+                put("title", cur.title)
+                put("moodLabel", cur.moodLabel)
+                put("personaTitle", cur.personaTitle)
+                put("zoneName", _myCurrentZone.value)
+                put("secretMessage", secretMessage)
+            })
         }
     }
 
@@ -370,15 +412,17 @@ object EchoStateRepository {
             putExtra(Intent.EXTRA_TEXT, sb.toString())
             type = "text/plain"
         }
-        val shareIntent = Intent.createChooser(sendIntent, "Экспорт плейлиста вечера")
-        shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val shareIntent = Intent.createChooser(sendIntent, "Экспорт плейлиста вечера").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         context.startActivity(shareIntent)
     }
 
     private fun startUdpDiscovery() {
         scope.launch {
+            var socket: DatagramSocket? = null
             try {
-                val socket = DatagramSocket(null).apply {
+                socket = DatagramSocket(null).apply {
                     reuseAddress = true
                     bind(InetSocketAddress(8888))
                     soTimeout = 4000
@@ -388,22 +432,27 @@ object EchoStateRepository {
                     try {
                         val packet = DatagramPacket(buffer, buffer.size)
                         socket.receive(packet)
-                        val msg = String(packet.data, 0, packet.length).trim()
-                        if (msg.startsWith("ECHO_SERVER_DISCOVERY:")) {
-                            val portStr = msg.removePrefix("ECHO_SERVER_DISCOVERY:").trim()
-                            val senderIp = packet.address.hostAddress
-                            if (!senderIp.isNullOrBlank()) {
-                                val discovered = "$senderIp:$portStr"
-                                if (discovered != serverHost) {
-                                    serverHost = discovered
+                        if (!isCustomHostPinned) {
+                            val msg = String(packet.data, 0, packet.length).trim()
+                            if (msg.startsWith("ECHO_SERVER_DISCOVERY:")) {
+                                val portStr = msg.removePrefix("ECHO_SERVER_DISCOVERY:").trim()
+                                val senderIp = packet.address.hostAddress
+                                if (!senderIp.isNullOrBlank()) {
+                                    val discovered = "$senderIp:$portStr"
+                                    if (discovered != serverHost) {
+                                        serverHost = discovered
+                                    }
                                 }
                             }
                         }
-                    } catch (_: Exception) {}
-                    delay(2000)
+                    } catch (_: Exception) {
+                        delay(1500)
+                    }
                 }
-                socket.close()
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            } finally {
+                try { socket?.close() } catch (_: Exception) {}
+            }
         }
     }
 
@@ -418,50 +467,61 @@ object EchoStateRepository {
         }
     }
 
-    private fun sendSignalToServer() {
-        try {
-            val cur = _myCurrentTrack.value
-            val url = URL("http://$serverHost/api/signal")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 3000
-                readTimeout = 3000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            }
+    private suspend fun sendSignalToServer() {
+        val cur = _myCurrentTrack.value
+        val histArr = JSONArray()
+        synchronized(localHistoryQueue) {
+            localHistoryQueue.forEach { histArr.put(it) }
+        }
 
-            val body = JSONObject().apply {
-                put("id", deviceId)
-                put("artist", cur.artist)
-                put("title", cur.title)
-                put("sourceName", cur.sourceName)
-                put("zoneName", _myCurrentZone.value)
-                put("personaTitle", cur.personaTitle)
-                put("personaObservation", cur.personaObservation)
-                put("moodLabel", cur.moodLabel)
-                put("colorHex", cur.colorHex)
-                put("avatarPetals", cur.avatarPetals)
+        val body = JSONObject().apply {
+            put("id", deviceId)
+            put("artist", cur.artist)
+            put("title", cur.title)
+            put("sourceName", cur.sourceName)
+            put("zoneName", _myCurrentZone.value)
+            put("personaTitle", cur.personaTitle)
+            put("personaObservation", cur.personaObservation)
+            put("moodLabel", cur.moodLabel)
+            put("colorHex", ensureOpaqueColor(cur.colorHex))
+            put("avatarPetals", cur.avatarPetals)
+            put("recentTracks", histArr)
+        }
+        postJsonToServer("/api/signal", body)
+    }
 
-                val histArr = JSONArray()
-                synchronized(localHistoryQueue) {
-                    localHistoryQueue.forEach { histArr.put(it) }
+    private suspend fun postJsonToServer(endpoint: String, body: JSONObject) {
+        syncMutex.withLock {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = buildEndpointUrl(endpoint)
+                conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
                 }
-                put("recentTracks", histArr)
+                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use {
+                    it.write(body.toString())
+                }
+                if (conn.responseCode in 200..299) {
+                    val respText = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
+                        it.readText()
+                    }
+                    handleServerResponse(JSONObject(respText))
+                }
+            } catch (_: Exception) {
+            } finally {
+                conn?.disconnect()
             }
-
-            OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()) }
-            if (conn.responseCode == 200) {
-                val resp = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                handleServerResponse(JSONObject(resp))
-            }
-            conn.disconnect()
-        } catch (_: Exception) {}
+        }
     }
 
     private fun handleServerResponse(json: JSONObject) {
         val current = _myCurrentTrack.value
 
-        // 1. ПЕРЕХВАТ РЕАКЦИЙ ДЛЯ ТЕКУЩЕГО УСТРОЙСТВА
         val myReactObj = json.optJSONObject("myReactions")
         val parsedMyReactions = mutableMapOf<String, Int>()
         if (myReactObj != null) {
@@ -471,43 +531,51 @@ object EchoStateRepository {
                 val newCount = myReactObj.optInt(sym, 0)
                 parsedMyReactions[sym] = newCount
                 val oldCount = current.reactions[sym] ?: 0
-                if (newCount > oldCount) {
+                if (isFirstSyncCompleted && newCount > oldCount) {
+                    val bId = System.currentTimeMillis()
+                    lastHandledBannerId = bId
                     _incomingBanner.value = IncomingReactionBanner(
-                        id = System.currentTimeMillis(),
+                        id = bId,
                         symbol = sym,
-                        message = "Слушатель рядом откликнулся на трек «${current.artist}» символом $sym"
+                        message = "Слушатель рядом откликнулся на волну «${current.artist}» символом $sym"
                     )
                 }
             }
         }
 
-        // 2. ПРЯМАЯ ДОСТАВКА ИМПУЛЬСА (если сервер вернул активный incomingBanner)
         val bannerObj = json.optJSONObject("incomingBanner")
         if (bannerObj != null) {
+            val bId = bannerObj.optLong("id", 0L)
             val targetId = bannerObj.optString("targetId", "")
-            val bId = bannerObj.optLong("id", System.currentTimeMillis())
+            val senderId = bannerObj.optString("senderId", "")
             val bSym = bannerObj.optString("symbol", "✦")
             val bMsg = bannerObj.optString("message", "Вам отправлен импульс $bSym")
-            if (targetId.isEmpty() || targetId == deviceId) {
-                if (_incomingBanner.value?.id != bId) {
-                    _incomingBanner.value = IncomingReactionBanner(id = bId, symbol = bSym, message = bMsg)
-                }
+
+            val isNotFromMe = senderId != deviceId
+            val isForMeOrBroadcast = targetId.isEmpty() || targetId == deviceId || targetId == "pc_studio_node"
+
+            if (bId > 0L && bId != lastHandledBannerId && isNotFromMe && isForMeOrBroadcast) {
+                lastHandledBannerId = bId
+                _incomingBanner.value = IncomingReactionBanner(id = bId, symbol = bSym, message = bMsg)
             }
         }
 
-        // 3. Обновление текущего ИИ-портрета и настроения
+        isFirstSyncCompleted = true
+
         val refinedMood = json.optString("myRefinedMood", "")
         val serverPersona = json.optString("myCuratedPersona", "")
         val serverObs = json.optString("myCuratedObservation", "")
+        val serverColor = ensureOpaqueColor(json.optLong("myColorHex", current.colorHex))
 
         _myCurrentTrack.value = current.copy(
+            id = deviceId,
             personaTitle = if (serverPersona.isNotBlank()) serverPersona else current.personaTitle,
             personaObservation = if (serverObs.isNotBlank()) serverObs else current.personaObservation,
             moodLabel = if (refinedMood.isNotBlank()) refinedMood else current.moodLabel,
+            colorHex = serverColor,
             reactions = parsedMyReactions
         )
 
-        // 4. Парсинг окружающих сигналов и Призрачных следов
         val sigArr = json.optJSONArray("nearbySignals") ?: json.optJSONArray("signals")
         if (sigArr != null) {
             val list = mutableListOf<EchoTrackSignal>()
@@ -526,6 +594,10 @@ object EchoStateRepository {
                     }
                 }
 
+                val moodStr = item.optString("moodLabel", "Теплый винил")
+                val obsStr = item.optString("personaObservation", "Слушает музыку в вечерней тишине.")
+                val isGhostFlag = item.optBoolean("isGhost", moodStr.contains("Призрачный") || obsStr.contains("Призрачный"))
+
                 list.add(
                     EchoTrackSignal(
                         id = sid,
@@ -536,49 +608,60 @@ object EchoStateRepository {
                         angleDegrees = item.optDouble("angleDegrees", 45.0).toFloat(),
                         distanceRatio = item.optDouble("distanceRatio", 0.45).toFloat(),
                         personaTitle = item.optString("personaTitle", "Архивариус забытых кассет"),
-                        personaObservation = item.optString("personaObservation", "Слушает музыку в вечерней тишине."),
-                        moodLabel = item.optString("moodLabel", "Теплый винил"),
+                        personaObservation = obsStr,
+                        moodLabel = moodStr,
                         compatibilityPercent = item.optInt("compatibilityPercent", 85),
                         resonanceDays = item.optInt("resonanceDays", 1),
                         encountersCount = item.optInt("encountersCount", 1),
-                        colorHex = item.optLong("colorHex", 0xFF38BDF8),
-                        avatarPetals = item.optInt("avatarPetals", 6),
+                        colorHex = ensureOpaqueColor(item.optLong("colorHex", 0xFF38BDF8)),
+                        avatarPetals = item.optInt("avatarPetals", 6).coerceIn(3, 12),
                         zoneName = item.optString("zoneName", "Вечерняя улица"),
-                        reactions = rMap
+                        reactions = rMap,
+                        isGhost = isGhostFlag,
+                        ageMinutes = item.optInt("ageMinutes", 0),
+                        lat = item.optDouble("lat", 55.7602),
+                        lon = item.optDouble("lon", 37.6185),
+                        updatedAt = (item.optDouble("updatedAt", 0.0) * 1000).toLong()
                     )
                 )
             }
             _nearbySignals.value = list
         }
 
-        // 5. Парсинг тайников
         val capArr = json.optJSONArray("capsules")
         if (capArr != null) {
             val capList = mutableListOf<EchoTimeCapsule>()
             for (i in 0 until capArr.length()) {
                 val c = capArr.getJSONObject(i)
+                val creator = c.optString("creatorId", "")
+                val isVen = c.optBoolean("isVenue", creator.startsWith("venue_"))
+                val venName = c.optString("venueName", "")
+
                 capList.add(
                     EchoTimeCapsule(
                         id = c.optString("id", ""),
-                        creatorId = c.optString("creatorId", ""),
+                        creatorId = creator,
                         artist = c.optString("artist", ""),
                         title = c.optString("title", ""),
                         moodLabel = c.optString("moodLabel", "Теплый винил"),
-                        personaTitle = c.optString("personaTitle", ""),
+                        personaTitle = if (isVen && venName.isNotBlank()) venName else c.optString("personaTitle", ""),
                         zoneName = c.optString("zoneName", "Вечерняя улица"),
                         secretMessage = c.optString("secretMessage", ""),
                         distanceMeters = c.optInt("distanceMeters", 60),
                         angleDegrees = c.optDouble("angleDegrees", 120.0).toFloat(),
                         distanceRatio = c.optDouble("distanceRatio", 0.5).toFloat(),
                         compatibilityPercent = c.optInt("compatibilityPercent", 90),
-                        isUnlocked = c.optBoolean("isUnlocked", true)
+                        isUnlocked = c.optBoolean("isUnlocked", true),
+                        isVenue = isVen,
+                        venueName = venName,
+                        lat = c.optDouble("lat", 55.7602),
+                        lon = c.optDouble("lon", 37.6185)
                     )
                 )
             }
             _nearbyCapsules.value = capList
         }
 
-        // 6. Хроника вечерних следов
         val tracesArr = json.optJSONArray("eveningTraces")
         if (tracesArr != null) {
             val traces = mutableListOf<String>()
@@ -588,7 +671,6 @@ object EchoStateRepository {
             _eveningTraces.value = traces
         }
 
-        // 7. Городские зоны
         val zonesArr = json.optJSONArray("cityZones")
         if (zonesArr != null) {
             val parsedZones = mutableListOf<CityZoneTrace>()
@@ -599,7 +681,11 @@ object EchoStateRepository {
                         placeName = z.optString("placeName", "Вечерняя улица"),
                         dominantVibe = z.optString("dominantVibe", "Теплый синт"),
                         recentArtists = z.optString("recentArtists", ""),
-                        listenersCount = z.optInt("listenersCount", 1)
+                        listenersCount = z.optInt("listenersCount", 1),
+                        fogColorHex = ensureOpaqueColor(z.optLong("fogColorHex", 0xFF38BDF8)),
+                        fogRadius = z.optInt("fogRadius", 500),
+                        lat = z.optDouble("lat", 55.7602),
+                        lon = z.optDouble("lon", 37.6185)
                     )
                 )
             }
