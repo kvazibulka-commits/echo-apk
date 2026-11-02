@@ -25,7 +25,23 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 3. Подготовка штатного Android SDK (без устаревшего пакета tools)
+      - name: 3. Кэширование ключа подписи debug.keystore (для обновления поверх в BlueStacks)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: echo-debug-keystore-permanent-v1
+
+      - name: 4. Генерация постоянного debug.keystore (если еще не создан)
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkey -v -keystore ~/.android/debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: 5. Подготовка штатного Android SDK
         run: |
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
@@ -36,13 +52,13 @@ jobs:
             "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           fi
 
-      - name: 4. Настройка и кэширование Gradle 8.7
+      - name: 6. Настройка и кэширование Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
           cache-read-only: false
 
-      - name: 5. Сборка Debug APK
+      - name: 7. Сборка Debug APK
         run: |
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
@@ -51,7 +67,7 @@ jobs:
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: 6. Публикация готового APK в Artifacts
+      - name: 8. Публикация готового APK в Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: echo-radar-debug-apk
